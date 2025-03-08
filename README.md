@@ -1,1 +1,0 @@
-The repo to build basic GCN for User Behavior Analysis.
