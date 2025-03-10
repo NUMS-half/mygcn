@@ -3,7 +3,7 @@ import random
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
-from utils.data_config import DIMENSION_MAPPINGS, FEEDBACK_PROCESS
+from utils.data_config import *
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,9 +13,9 @@ logging.basicConfig(
 logger = logging.getLogger("DataGenerator")
 
 # 设置标签的权重（可修改）
-value_weights = [0.2, 0.5, 0.3]  # 高价值用户占20%，中价值用户占50%，低价值用户占30%
-credit_weights = [0.2, 0.1, 0.7]  # 黑名单用户占20%，高风险用户占10%，信用良好用户占70%
-feedback_weights = [0.2, 0.6, 0.2]  # 咨询用户占20%，投诉用户占60%，沉默反馈用户占20%
+value_weights = USER_TYPE_WEIGHTS[0]
+credit_weights = USER_TYPE_WEIGHTS[1]
+feedback_weights = USER_TYPE_WEIGHTS[2]
 
 # 定义反馈流程
 feedback_process = FEEDBACK_PROCESS
@@ -26,21 +26,21 @@ def random_date(start_date, end_date):
     return start_date + timedelta(seconds=random.randint(0, int((end_date - start_date).total_seconds())))
 
 
-# 模拟数据生成函数
 def generate_data(num_samples=1000):
+    """模拟数据生成函数（默认情况下1000条）"""
     data = []
     start_date = datetime(2021, 1, 1)
     end_date = datetime(2024, 12, 31)
 
     for sn in range(1, num_samples + 1):
-        # 随机选择每个维度的标签（根据权重）
+        # 1. 随机选择每个用户类型维度的标签（根据权重）
         value_label = random.choices(DIMENSION_MAPPINGS["value"], value_weights)[0]
         credit_label = random.choices(DIMENSION_MAPPINGS["credit"], credit_weights)[0]
         feedback_label = random.choices(DIMENSION_MAPPINGS["feedback"], feedback_weights)[0]
 
-        # 随机选择用户行为数据
+        # 2. 随机选择用户行为数据取值
         def get_weighted_label(dimension_key):
-            """Generate a weighted random choice from dimension mappings with last item having lower weight."""
+            """从维度映射中生成一个加权的随机选择，最后一项（inf）的权重较低"""
             weights = [5] * (len(DIMENSION_MAPPINGS[dimension_key]) - 1) + [1]
             return random.choices(DIMENSION_MAPPINGS[dimension_key], weights)[0]
 
@@ -51,7 +51,7 @@ def generate_data(num_samples=1000):
         arpu_label = get_weighted_label("arpu")
         mou_label = get_weighted_label("mou")
 
-        # 将所有行为标签拼接为一个字符串
+        # 3. 将所有行为标签拼接为一个字符串
         behavior_str = ",".join([
             f'"{traffic_label}"',
             f'"{package_label}"',
@@ -85,20 +85,21 @@ def generate_data(num_samples=1000):
 
 
 # 生成模拟数据
-num_samples = 2000  # 可调整为需要的数量
-simulated_data = generate_data(num_samples)
+simulated_data = generate_data(DATA_SIZE)
 
 # 创建DataFrame
 columns = ["DYPT.BRANCH_NAM", "DYPT.ACCEPT_DT", "DYPT.ORDER_ID", "DYPT.SN", "DYPT.LAB_NAM_COMBINED", "DYPT.MS"]
 df = pd.DataFrame(simulated_data, columns=columns)
 
 # 保存为CSV文件
-# Ensure directory exists before saving
 csv_file = "../data/raw/generated_user_behavior_data.csv"
 output_dir = os.path.dirname(csv_file)
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-    logger.info(f"创建输出目录: {output_dir}")
-df.to_csv(csv_file, index=False, encoding='utf-8-sig')
-
-logger.info(f"已生成 {num_samples} 条模拟数据，并保存为：{csv_file}")
+try:
+    # 确保输出目录存在
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        logger.info(f"已创建输出目录: {output_dir}")
+    df.to_csv(csv_file, index=False, encoding='utf-8-sig')
+except Exception as e:
+    logger.error(f"保存编码映射信息失败: {e}")
+logger.info(f"已生成 {DATA_SIZE} 条模拟数据，并保存为：{csv_file}")

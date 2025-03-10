@@ -1,12 +1,14 @@
 import pandas as pd
 import os
 import logging
+import networkx as nx
+import matplotlib.pyplot as plt
 from utils.data_config import DIMENSION_MAPPINGS
 
 
-class TripleGenerator:
+class GraphGenerator:
     """
-    三元组数据生成器类
+    三元组数据与可视化图谱生成器类
     用于将用户行为数据转换为适合机器学习的三元组格式(OrderID, Label, StatusCode)
     """
 
@@ -24,6 +26,7 @@ class TripleGenerator:
         self.df = None
         self.status_encoding = {}
         self.triples = {}
+        self.graph = nx.Graph()  # 初始化图谱对象
 
         # 配置日志
         self._setup_logging()
@@ -35,7 +38,7 @@ class TripleGenerator:
             format="%(asctime)s-%(name)s-%(levelname)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
         )
-        self.logger = logging.getLogger("TripleGenerator")
+        self.logger = logging.getLogger("GraphGenerator")
 
     def load_data(self):
         """加载CSV数据"""
@@ -95,13 +98,13 @@ class TripleGenerator:
                     dimension_codes[dimension] = self.get_status_code(dimension, label)
 
             # 为每个维度生成三元组
-            for dimension in DIMENSION_MAPPINGS:
+            for dimension, labels in DIMENSION_MAPPINGS.items():
                 if dimension in dimension_codes and dimension_codes[dimension] is not None:
                     # 添加正样本
                     self.triples[dimension].append((order_id, 1, dimension_codes[dimension]))
 
                     # 添加负样本
-                    for label in DIMENSION_MAPPINGS[dimension]:
+                    for label in labels:
                         other_code = self.get_status_code(dimension, label)
                         if other_code != dimension_codes[dimension]:
                             self.triples[dimension].append((order_id, 0, other_code))
@@ -143,7 +146,7 @@ class TripleGenerator:
                 code = self.get_status_code(dimension, label)
                 mapping_data.append([dimension, label, code])
 
-        # 创建DataFrame并保存
+        # 创建DataFrame并保存：维度状态与编码的映射关系
         mapping_df = pd.DataFrame(mapping_data, columns=["Dimension", "Label", "Code"])
         file_name = os.path.join(self.output_dir, "encoding_mapping.csv")
 
@@ -151,29 +154,72 @@ class TripleGenerator:
             # 确保输出目录存在
             if not os.path.exists(self.output_dir):
                 os.makedirs(self.output_dir)
+                self.logger.info(f"已创建输出目录: {self.output_dir}")
 
             mapping_df.to_csv(file_name, index=False, encoding='utf-8-sig')
             self.logger.info(f"编码映射信息已保存至: {file_name}")
         except Exception as e:
             self.logger.error(f"保存编码映射信息失败: {e}")
 
+    def build_knowledge_graph(self):
+        """根据三元组数据构建知识图谱"""
+
+        # 通过三元组添加节点和边
+        for dimension, dimension_triples in self.triples.items():
+            for order_id, label, status_code in dimension_triples:
+                # 仅添加 label 为 1 的边
+                if label == 1:
+                    # 添加订单ID和状态编码为节点
+                    self.graph.add_node(order_id, type='order')  # 订单ID节点
+                    self.graph.add_node(status_code, type='status')  # 状态编码节点
+
+                    # 添加边（订单ID和状态编码之间的连接）
+                    self.graph.add_edge(order_id, status_code, label=label)
+
+        self.logger.info("知识图谱构建完成")
+
+    def visualize_graph(self):
+        """可视化知识图谱"""
+        # 设置节点颜色和大小
+        node_colors = []
+        node_sizes = []
+
+        for node, data in self.graph.nodes(data=True):
+            if data['type'] == 'order':  # 订单ID节点
+                node_colors.append('lightgreen')
+                node_sizes.append(300)  # 订单ID节点的大小
+            elif data['type'] == 'status':  # 状态编码节点
+                node_colors.append('skyblue')
+                node_sizes.append(150)  # 状态编码节点的大小
+
+        # 绘制图
+        plt.figure(figsize=(12, 12))
+        pos = nx.spring_layout(self.graph, seed=42, k=0.1)  # 使用spring布局，k决定节点之间的间距
+        nx.draw(self.graph, pos, with_labels=True, node_color=node_colors, node_size=node_sizes, font_size=10,
+                font_weight='bold', edge_color='gray')
+
+        plt.title("Knowledge Graph of User Feedback Data", fontsize=14)
+        plt.show()
+
     def process(self):
         """执行完整的三元组生成流程"""
         try:
-            self.load_data()
-            self.initialize_encoding()
-            self.save_encoding_info()
-            self.generate_triples()
-            self.save_triples()
+            self.load_data()  # 加载数据
+            self.initialize_encoding()  # 初始化编码
+            self.save_encoding_info()  # 保存编码信息
+            self.generate_triples()  # 生成三元组数据
+            self.save_triples()  # 保存三元组文件
+            self.build_knowledge_graph()  # 构建知识图谱
+            self.visualize_graph()  # 可视化知识图谱
             return True
         except Exception as e:
             self.logger.error(f"处理过程中出错: {e}")
             return False
 
 
-# 执行三元组生成
+# 执行三元组生成并构建知识图谱
 def main():
-    generator = TripleGenerator()
+    generator = GraphGenerator()
     generator.process()
 
 

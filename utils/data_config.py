@@ -1,3 +1,15 @@
+"""生成模拟数据配置文件"""
+
+__all__ = [
+    "DATA_SIZE",
+    "DIMENSION_MAPPINGS",
+    "USER_TYPE_WEIGHTS",
+    "FEEDBACK_PROCESS"
+]
+
+# 数据量设置
+DATA_SIZE = 10
+
 # 维度标签配置
 # 1. 用户价值维度
 VALUE_LABELS = ["高价值用户", "中价值用户", "低价值用户"]
@@ -23,7 +35,6 @@ PACKAGE_LABELS = [f"主套餐月租费({start},{end}]" for start, end in
                    (139, 169),
                    (169, 269),
                    (269, 'inf')]]
-
 # 6. 语音超套费用维度
 VOICE_EXCEED_LABELS = [f"上月超套语音费用({start},{end}]" for start, end in
                        [(0, 10),
@@ -32,14 +43,12 @@ VOICE_EXCEED_LABELS = [f"上月超套语音费用({start},{end}]" for start, end
                         (60, 100),
                         (100, 200),
                         (200, 'inf')]]
-
 # 7. 流量超套费用维度
 TRAFFIC_EXCEED_LABELS = [f"上月超套流量费用({start},{end}]" for start, end in
                          [(0, 30),
                           (30, 60),
                           (60, 100),
                           (100, 'inf')]]
-
 # 8. 上月折后ARPU维度
 ARPU_LABELS = [f"上月折后ARPU在({start},{end}]" for start, end in
                [(0, 30),
@@ -47,7 +56,6 @@ ARPU_LABELS = [f"上月折后ARPU在({start},{end}]" for start, end in
                 (50, 100),
                 (100, 200),
                 (200, 'inf')]]
-
 # 9. 上月MOU维度
 MOU_LABELS = [f"上月MOU在({start},{end}]" for start, end in
               [(0, 30),
@@ -68,9 +76,11 @@ DIMENSION_MAPPINGS = {
     "mou": MOU_LABELS
 }
 
-# 打印各个列表
-# for key, value in DIMENSION_MAPPINGS.items():
-#     print(f"{key}: {value}")
+USER_TYPE_WEIGHTS = [
+    [0.2, 0.5, 0.3],  # value维度：高价值用户占20%，中价值用户占50%，低价值用户占30%
+    [0.2, 0.1, 0.7],  # credit维度：黑名单用户占20%，高风险用户占10%，信用良好用户占70%
+    [0.2, 0.6, 0.2],  # feedback维度：咨询用户占20%，投诉用户占60%，沉默反馈用户占20%
+]
 
 # 反馈流程列表
 FEEDBACK_PROCESS = [
