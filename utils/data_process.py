@@ -1,8 +1,10 @@
-import pandas as pd
 import os
-import logging
+import torch
+import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+from utils.logger import get_logger
+from torch_geometric.data import Data
 from utils.data_config import DIMENSION_MAPPINGS
 
 
@@ -28,17 +30,7 @@ class GraphGenerator:
         self.triples = {}
         self.graph = nx.Graph()  # 初始化图谱对象
 
-        # 配置日志
-        self._setup_logging()
-
-    def _setup_logging(self):
-        """配置日志系统"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s-%(name)s-%(levelname)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        self.logger = logging.getLogger("GraphGenerator")
+        self.logger = get_logger("GraphGenerator")  # 配置日志
 
     def load_data(self):
         """加载CSV数据"""
@@ -178,6 +170,32 @@ class GraphGenerator:
 
         self.logger.info("知识图谱构建完成")
 
+    def save_graph_as_pt(self, filename="knowledge_graph.pt"):
+        """将构建的图保存为 PyTorch Geometric 格式"""
+        edge_index = []
+        edge_attr = []
+        node_mapping = {node: idx for idx, node in enumerate(self.graph.nodes)}
+
+        # 为节点分配ID并更新边的索引
+        for u, v, data in self.graph.edges(data=True):
+            edge_index.append([node_mapping[u], node_mapping[v]])  # 将节点名称转为整数索引
+            edge_attr.append([data['label']])
+
+        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+
+        # 节点特征
+        num_nodes = len(self.graph.nodes)
+        node_features = torch.eye(num_nodes, dtype=torch.float)  # 使用单位矩阵表示节点特征
+
+        # 创建PyTorch Geometric数据对象
+        data = Data(x=node_features, edge_index=edge_index, edge_attr=edge_attr)
+
+        # 保存为 .pth 文件
+        filename = os.path.join(self.output_dir, filename)
+        torch.save(data, filename)
+        self.logger.info(f"图数据已保存为: {filename}")
+
     def visualize_graph(self):
         """可视化知识图谱"""
         # 设置节点颜色和大小
@@ -210,7 +228,8 @@ class GraphGenerator:
             self.generate_triples()  # 生成三元组数据
             self.save_triples()  # 保存三元组文件
             self.build_knowledge_graph()  # 构建知识图谱
-            self.visualize_graph()  # 可视化知识图谱
+            self.save_graph_as_pt()  # 保存图为 .pt 文件
+            # self.visualize_graph()  # 可视化知识图谱
             return True
         except Exception as e:
             self.logger.error(f"处理过程中出错: {e}")

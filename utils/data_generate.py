@@ -1,16 +1,11 @@
 import os
 import random
-import logging
 import pandas as pd
-from datetime import datetime, timedelta
 from utils.data_config import *
+from utils.logger import get_logger
+from datetime import datetime, timedelta
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s-%(name)s-%(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger("DataGenerator")
+logger = get_logger("DataGenerator")
 
 # 设置标签的权重（可修改）
 value_weights = USER_TYPE_WEIGHTS[0]
