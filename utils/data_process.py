@@ -27,8 +27,6 @@ class GraphGenerator:
         self.output_dir = output_dir
         self.df = None
         self.status_encoding = {}
-        self.triples = {}
-        self.graph = nx.Graph()  # 初始化图谱对象
 
         self.logger = get_logger("GraphGenerator")  # 配置日志
 
@@ -58,16 +56,33 @@ class GraphGenerator:
         """获取特定维度和标签的编码值"""
         return self.status_encoding.get(f"{dimension}_{label}")
 
-    def parse_combined_labels(self, lab_combined_str):
+    def split_data(self, train_ratio=0.7, val_ratio=0.15):
+        df = self.df
+        df = df.sort_values(by='DYPT.ACCEPT_DT')  # 按时间升序排序
+
+        total_len = len(df)
+        train_end = int(total_len * train_ratio)
+        val_end = train_end + int(total_len * val_ratio)
+
+        train_df = df[:train_end]
+        val_df = df[train_end:val_end]
+        test_df = df[val_end:]
+
+        self.logger.info(f"数据集已划分完成，Train：{len(train_df)}, Val：{len(val_df)}, Test：{len(test_df)}")
+
+        return train_df, val_df, test_df
+
+    @staticmethod
+    def parse_combined_labels(lab_combined_str):
         """解析组合标签字符串为标签列表"""
         cleaned = lab_combined_str.strip('"')
         parts = cleaned.split('","')
         return [part.strip('"') for part in parts]
 
-    def generate_triples(self):
-        """生成所有维度的三元组数据"""
+    def generate_triples(self, df):
+        """从指定的 DataFrame 生成三元组数据"""
         # 初始化每个维度的三元组列表
-        self.triples = {dimension: [] for dimension in DIMENSION_MAPPINGS}
+        triples = {dimension: [] for dimension in DIMENSION_MAPPINGS}
 
         # 预处理：创建标签到维度的映射以提高性能
         label_dimension_map = {}
@@ -76,7 +91,7 @@ class GraphGenerator:
                 label_dimension_map[label] = dimension
 
         # 处理每行数据
-        for _, row in self.df.iterrows():
+        for _, row in df.iterrows():
             order_id = row['DYPT.ORDER_ID']
             labels = self.parse_combined_labels(row['DYPT.LAB_NAM_COMBINED'])
 
@@ -93,27 +108,20 @@ class GraphGenerator:
             for dimension, labels in DIMENSION_MAPPINGS.items():
                 if dimension in dimension_codes and dimension_codes[dimension] is not None:
                     # 添加正样本
-                    self.triples[dimension].append((order_id, 1, dimension_codes[dimension]))
+                    triples[dimension].append((order_id, 1, dimension_codes[dimension]))
 
                     # 添加负样本
                     for label in labels:
                         other_code = self.get_status_code(dimension, label)
                         if other_code != dimension_codes[dimension]:
-                            self.triples[dimension].append((order_id, 0, other_code))
+                            triples[dimension].append((order_id, 0, other_code))
 
-        self.logger.info("三元组生成完成")
-        return self.triples
+        return triples
 
-    def save_triples(self):
-        """将三元组保存为CSV文件"""
-        # 确保输出目录存在
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-            self.logger.info(f"创建输出目录: {self.output_dir}")
-
-        # 为每个维度保存三元组
-        for dimension, dimension_triples in self.triples.items():
-            if not dimension_triples:  # 检查是否为空
+    def save_triples_to_dir(self, triples, output_dir):
+        """将三元组保存到指定目录"""
+        for dimension, dimension_triples in triples.items():
+            if not dimension_triples:
                 self.logger.warning(f"维度 '{dimension}' 没有三元组数据")
                 continue
 
@@ -121,7 +129,7 @@ class GraphGenerator:
                 dimension_triples,
                 columns=["OrderID", "Label", "StatusCode"]
             )
-            file_name = os.path.join(self.output_dir, f"user_{dimension}_triples.csv")
+            file_name = os.path.join(output_dir, f"user_{dimension}_triples.csv")
 
             try:
                 triples_df.to_csv(file_name, index=False, encoding='utf-8-sig')
@@ -153,56 +161,62 @@ class GraphGenerator:
         except Exception as e:
             self.logger.error(f"保存编码映射信息失败: {e}")
 
-    def build_knowledge_graph(self):
+    @staticmethod
+    def build_knowledge_graph(triples):
         """根据三元组数据构建知识图谱"""
+        graph = nx.Graph()
 
         # 通过三元组添加节点和边
-        for dimension, dimension_triples in self.triples.items():
+        for dimension, dimension_triples in triples.items():
             for order_id, label, status_code in dimension_triples:
                 # 仅添加 label 为 1 的边
                 if label == 1:
                     # 添加订单ID和状态编码为节点
-                    self.graph.add_node(order_id, type='order')  # 订单ID节点
-                    self.graph.add_node(status_code, type='status')  # 状态编码节点
+                    graph.add_node(order_id, type='order')
+                    graph.add_node(status_code, type='status')
+                    # 添加边
+                    graph.add_edge(order_id, status_code, label=label)
 
-                    # 添加边（订单ID和状态编码之间的连接）
-                    self.graph.add_edge(order_id, status_code, label=label)
+        return graph
 
-        self.logger.info("知识图谱构建完成")
-
-    def save_graph_as_pt(self, filename="knowledge_graph.pt"):
-        """将构建的图保存为 PyTorch Geometric 格式"""
+    def save_graph_as_pt(self, graph, output_dir,filename="knowledge_graph.pt"):
+        """将构建的图保存为 PyTorch Geometric 格式到指定目录"""
         edge_index = []
         edge_attr = []
-        node_mapping = {node: idx for idx, node in enumerate(self.graph.nodes)}
+        node_mapping = {node: idx for idx, node in enumerate(graph.nodes)}
 
         # 为节点分配ID并更新边的索引
-        for u, v, data in self.graph.edges(data=True):
-            edge_index.append([node_mapping[u], node_mapping[v]])  # 将节点名称转为整数索引
+        for u, v, data in graph.edges(data=True):
+            edge_index.append([node_mapping[u], node_mapping[v]])
             edge_attr.append([data['label']])
+
+        if not edge_index:  # 检查是否有边
+            self.logger.warning(f"图中没有边，跳过保存 {filename}")
+            return
 
         edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(edge_attr, dtype=torch.float)
 
         # 节点特征
-        num_nodes = len(self.graph.nodes)
-        node_features = torch.eye(num_nodes, dtype=torch.float)  # 使用单位矩阵表示节点特征
+        num_nodes = len(graph.nodes)
+        node_features = torch.eye(num_nodes, dtype=torch.float)
 
         # 创建PyTorch Geometric数据对象
         data = Data(x=node_features, edge_index=edge_index, edge_attr=edge_attr)
 
-        # 保存为 .pth 文件
-        filename = os.path.join(self.output_dir, filename)
-        torch.save(data, filename)
-        self.logger.info(f"图数据已保存为: {filename}")
+        # 保存为 .pt 文件
+        file_path = os.path.join(output_dir, filename)
+        torch.save(data, file_path)
+        self.logger.info(f"图数据已保存为: {file_path}")
 
-    def visualize_graph(self):
+    @staticmethod
+    def visualize_graph(graph, dataset_name, save=False):
         """可视化知识图谱"""
         # 设置节点颜色和大小
         node_colors = []
         node_sizes = []
 
-        for node, data in self.graph.nodes(data=True):
+        for node, data in graph.nodes(data=True):
             if data['type'] == 'order':  # 订单ID节点
                 node_colors.append('lightgreen')
                 node_sizes.append(300)  # 订单ID节点的大小
@@ -212,28 +226,75 @@ class GraphGenerator:
 
         # 绘制图
         plt.figure(figsize=(12, 12))
-        pos = nx.spring_layout(self.graph, seed=42, k=0.1)  # 使用spring布局，k决定节点之间的间距
-        nx.draw(self.graph, pos, with_labels=True, node_color=node_colors, node_size=node_sizes, font_size=10,
+        pos = nx.spring_layout(graph, seed=42, k=0.1)  # 使用spring布局，k决定节点之间的间距
+        nx.draw(graph, pos, with_labels=True, node_color=node_colors, node_size=node_sizes, font_size=10,
                 font_weight='bold', edge_color='gray')
 
-        plt.title("Knowledge Graph of User Feedback Data", fontsize=14)
+        plt.title(f"Knowledge Graph - {dataset_name}", fontsize=14)
         plt.show()
+        if save:
+            output_file = os.path.join("../data/processed", f"knowledge_graph_{dataset_name}.png")
+            plt.savefig(output_file)
+            print(f"图谱已保存为: {output_file}")
 
     def process(self):
         """执行完整的三元组生成流程"""
         try:
+            # 1. 加载数据，初始化编码
             self.load_data()  # 加载数据
             self.initialize_encoding()  # 初始化编码
             self.save_encoding_info()  # 保存编码信息
-            self.generate_triples()  # 生成三元组数据
-            self.save_triples()  # 保存三元组文件
-            self.build_knowledge_graph()  # 构建知识图谱
-            self.save_graph_as_pt()  # 保存图为 .pt 文件
-            # self.visualize_graph()  # 可视化知识图谱
+
+            # 2. 划分数据集
+            train_df, val_df, test_df = self.split_data()
+
+            # 3. 为每个数据集创建目录
+            train_dir = os.path.join(self.output_dir, "train")
+            val_dir = os.path.join(self.output_dir, "val")
+            test_dir = os.path.join(self.output_dir, "test")
+
+            for directory in [train_dir, val_dir, test_dir]:
+                if not os.path.exists(directory):
+                    os.makedirs(directory)
+                    self.logger.info(f"创建数据集目录: {directory}")
+
+            # 4. 处理训练集
+            self.logger.info(f"{'-' * 20}处理训练集数据{'-' * 20}")
+            self.process_dataset(train_df, train_dir, "train")
+
+            # 5. 处理验证集
+            self.logger.info(f"{'-' * 20}处理验证集数据{'-' * 20}")
+            self.process_dataset(val_df, val_dir, "val")
+
+            # 6. 处理测试集
+            self.logger.info(f"{'-' * 20}处理测试集数据{'-' * 20}")
+            self.process_dataset(test_df, test_dir, "test")
+
             return True
         except Exception as e:
             self.logger.error(f"处理过程中出错: {e}")
             return False
+
+    def process_dataset(self, df, output_dir, dataset_name):
+        """处理单个数据集的所有步骤"""
+        # 生成三元组
+        triples = self.generate_triples(df)
+        self.logger.info(f"已生成 {dataset_name} 数据集的三元组")
+
+        # 保存三元组
+        self.save_triples_to_dir(triples, output_dir)
+
+        # 构建知识图谱
+        graph = self.build_knowledge_graph(triples)
+        self.logger.info(f"已构建 {dataset_name} 数据集的知识图谱")
+
+        # 保存图
+        self.save_graph_as_pt(graph, output_dir)
+
+        # 可视化图谱
+        # self.visualize_graph(graph, dataset_name)
+
+        return triples
 
 
 # 执行三元组生成并构建知识图谱
