@@ -1,8 +1,5 @@
-# copy from https://github.com/tkipf/pygcn/blob/master/pygcn/layers.py
 import math
-
 import torch
-
 from torch.nn.parameter import Parameter
 from torch.nn.modules.module import Module
 

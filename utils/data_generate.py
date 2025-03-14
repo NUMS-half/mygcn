@@ -86,6 +86,7 @@ class DataGenerator:
 
             # 构建数据行
             row = [
+                "",  # LABEL
                 "深圳",  # DYPT.BRANCH_NAM
                 accept_dt,  # DYPT.ACCEPT_DT
                 order_id,  # DYPT.ORDER_ID
@@ -110,8 +111,8 @@ class DataGenerator:
             str: 保存的文件路径，失败则返回None
         """
         # 创建DataFrame
-        columns = ["DYPT.BRANCH_NAM", "DYPT.ACCEPT_DT", "DYPT.ORDER_ID", "DYPT.SN",
-                   "DYPT.LAB_NAM_COMBINED", "DYPT.MS"]
+        columns = ["BEHAVIOR_LABEL", "DYPT.BRANCH_NAM", "DYPT.ACCEPT_DT", "DYPT.ORDER_ID",
+                   "DYPT.SN", "DYPT.LAB_NAM_COMBINED", "DYPT.MS"]
         df = pd.DataFrame(data, columns=columns)
 
         # 保存为CSV文件
@@ -123,6 +124,7 @@ class DataGenerator:
                 os.makedirs(self.output_dir)
                 self.logger.info(f"已创建输出目录: {self.output_dir}")
 
+            df = df.sort_values(by='DYPT.ACCEPT_DT')
             df.to_csv(csv_file, index=False, encoding='utf-8-sig')
             self.logger.info(f"已生成 {len(data)} 条模拟数据，并保存为：{csv_file}")
             return csv_file

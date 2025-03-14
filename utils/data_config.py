@@ -4,11 +4,23 @@ __all__ = [
     "DATA_SIZE",
     "DIMENSION_MAPPINGS",
     "USER_TYPE_WEIGHTS",
-    "FEEDBACK_PROCESS"
+    "FEEDBACK_PROCESS",
+    "LABELS_MAPPING"
 ]
 
+# 标签
+LABELS_MAPPING = {
+    0: {"name": "流失离网", "description": "用户在接下来30天内将会主动销户或转网至其他运营商"},
+    1: {"name": "套餐升级", "description": "用户将升级至更高档位套餐或叠加增值服务"},
+    2: {"name": "套餐降级", "description": "用户将降低套餐档位或取消增值服务"},
+    3: {"name": "流量超套投诉", "description": "用户将可能因为流量超额产生高费用并提交投诉工单"},
+    4: {"name": "绑定融合业务", "description": "用户新增宽带/IPTV绑定或加入家庭共享套餐等融合业务"},
+    5: {"name": "信用恶化", "description": "用户信用将会变差，考虑加入黑名单或灰名单"},
+    6: {"name": "保持现状", "description": "用户将不会发生上述任何行为变化"}
+}
+
 # 数据量设置
-DATA_SIZE = 10000
+DATA_SIZE = 20000
 
 # 维度标签配置
 # 1. 用户价值维度

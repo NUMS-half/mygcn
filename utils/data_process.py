@@ -11,10 +11,10 @@ from utils.data_config import DIMENSION_MAPPINGS
 class GraphGenerator:
     """
     三元组数据与可视化图谱生成器类
-    用于将用户行为数据转换为适合机器学习的三元组格式(OrderID, Label, StatusCode)
+    用于将用户行为数据转换为三元组格式(OrderID, Label, StatusCode)
     """
 
-    def __init__(self, input_file="../data/raw/generated_user_behavior_data.csv",
+    def __init__(self, input_file="../data/raw/labeled_user_behavior_data.csv",
                  output_dir="../data/processed"):
         """
         初始化三元组生成器
@@ -56,9 +56,8 @@ class GraphGenerator:
         """获取特定维度和标签的编码值"""
         return self.status_encoding.get(f"{dimension}_{label}")
 
-    def split_data(self, train_ratio=0.7, val_ratio=0.15):
+    def split_data(self, train_ratio=0.6, val_ratio=0.2):
         df = self.df
-        df = df.sort_values(by='DYPT.ACCEPT_DT')  # 按时间升序排序
 
         total_len = len(df)
         train_end = int(total_len * train_ratio)
@@ -162,28 +161,71 @@ class GraphGenerator:
             self.logger.error(f"保存编码映射信息失败: {e}")
 
     @staticmethod
-    def build_knowledge_graph(triples):
-        """根据三元组数据构建知识图谱"""
+    def build_knowledge_graph(triples, df):
         graph = nx.Graph()
 
-        # 通过三元组添加节点和边
+        # 创建映射
+        order_attributes = {}
+        for _, row in df.iterrows():
+            order_id = row['DYPT.ORDER_ID']
+            behavior_label = row.get('BEHAVIOR_LABEL', None)
+            accept_dt = row.get('DYPT.ACCEPT_DT', "")
+            ms_process = row.get('DYPT.MS', "")
+
+            order_attributes[order_id] = {
+                'behavior_label': int(behavior_label) if pd.notna(behavior_label) else -1,
+                'time': accept_dt,
+                'process': ms_process
+            }
+
+        # 预处理：收集所有需要添加的节点和边避免重复
+        nodes_to_add = set()
+        edges_to_add = set()
+
         for dimension, dimension_triples in triples.items():
             for order_id, label, status_code in dimension_triples:
-                # 仅添加 label 为 1 的边
                 if label == 1:
-                    # 添加订单ID和状态编码为节点
-                    graph.add_node(order_id, type='order')
-                    graph.add_node(status_code, type='status')
-                    # 添加边
-                    graph.add_edge(order_id, status_code, label=label)
+                    nodes_to_add.add((order_id, 'order'))
+                    nodes_to_add.add((status_code, 'status'))
+                    edges_to_add.add((order_id, status_code))
+
+        # 批量添加节点和边
+        for node, node_type in nodes_to_add:
+            if node_type == 'order' and node in order_attributes:
+                graph.add_node(node, type=node_type, **order_attributes[node])
+            else:
+                graph.add_node(node, type=node_type)
+
+        for u, v in edges_to_add:
+            graph.add_edge(u, v, label=1)
 
         return graph
 
-    def save_graph_as_pt(self, graph, output_dir,filename="knowledge_graph.pt"):
+    def save_graph_as_pt(self, graph, output_dir, filename="knowledge_graph.pt"):
         """将构建的图保存为 PyTorch Geometric 格式到指定目录"""
         edge_index = []
         edge_attr = []
         node_mapping = {node: idx for idx, node in enumerate(graph.nodes)}
+        behavior_labels = []  # 存储节点行为标签信息
+        time_attrs = []  # 存储时间属性
+        process_attrs = []  # 存储流程属性
+
+        # 收集节点属性
+        for node in graph.nodes():
+            node_attr = graph.nodes[node]
+            # 收集行为标签
+            if node_attr.get('type') == 'order' and 'behavior_label' in node_attr:
+                behavior_labels.append(int(node_attr['behavior_label']))
+            else:
+                behavior_labels.append(-1)  # 对于非订单节点或没有行为标签的节点
+
+            # 收集时间和流程属性
+            if node_attr.get('type') == 'order':
+                time_attrs.append(node_attr.get('time', ''))
+                process_attrs.append(node_attr.get('process', ''))
+            else:
+                time_attrs.append('')
+                process_attrs.append('')
 
         # 为节点分配ID并更新边的索引
         for u, v, data in graph.edges(data=True):
@@ -197,12 +239,44 @@ class GraphGenerator:
         edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(edge_attr, dtype=torch.float)
 
-        # 节点特征
-        num_nodes = len(graph.nodes)
-        node_features = torch.eye(num_nodes, dtype=torch.float)
+        # 节点特征，从2维扩展到43维(1类用户 + 42类行为)
+        node_features = []
+        for node in graph.nodes():
+            node_attr = graph.nodes[node]
+            if node_attr.get('type') == 'order':
+                # 用户节点 - 设置第一维为1，其余为0
+                features = [0.0] * 43
+                features[0] = 1.0  # 用户特征标识
+                node_features.append(features)
+            else:  # status节点
+                # 状态节点 - 对应状态码设置为1
+                features = [0.0] * 43
+                try:
+                    status_code = int(node)  # 节点ID实际是状态码
+                    if 0 <= status_code < 42:  # 确保状态码在有效范围内
+                        features[status_code + 1] = 1.0  # 从索引1开始表示42种行为
+                except ValueError:
+                    pass  # 非数字状态码使用全 0 特征
+                node_features.append(features)
+
+        node_features = torch.tensor(node_features, dtype=torch.float)
+
+        # 创建行为标签张量
+        behavior_labels = torch.tensor(behavior_labels, dtype=torch.long)
 
         # 创建PyTorch Geometric数据对象
-        data = Data(x=node_features, edge_index=edge_index, edge_attr=edge_attr)
+        data = Data(
+            x=node_features,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            y=behavior_labels  # 保存节点行为标签信息
+        )
+
+        # 保存时间和流程属性（作为元数据）
+        time_dict = {i: attr for i, attr in enumerate(time_attrs) if attr}
+        process_dict = {i: attr for i, attr in enumerate(process_attrs) if attr}
+        data.time_attr = time_dict
+        data.process_attr = process_dict
 
         # 保存为 .pt 文件
         file_path = os.path.join(output_dir, filename)
@@ -236,6 +310,27 @@ class GraphGenerator:
             output_file = os.path.join("../data/processed", f"knowledge_graph_{dataset_name}.png")
             plt.savefig(output_file)
             print(f"图谱已保存为: {output_file}")
+
+    def process_dataset(self, df, output_dir, dataset_name):
+        """处理单个数据集的所有步骤"""
+        # 生成三元组
+        triples = self.generate_triples(df)
+        self.logger.info(f"已生成 {dataset_name} 数据集的三元组")
+
+        # 保存三元组(可选)
+        # self.save_triples_to_dir(triples, output_dir)
+
+        # 构建知识图谱
+        graph = self.build_knowledge_graph(triples, df)
+        self.logger.info(f"已构建 {dataset_name} 数据集的知识图谱")
+
+        # 保存图
+        self.save_graph_as_pt(graph, output_dir)
+
+        # 可视化图谱(可选)
+        # self.visualize_graph(graph, dataset_name)
+
+        return triples
 
     def process(self):
         """执行完整的三元组生成流程"""
@@ -274,27 +369,6 @@ class GraphGenerator:
         except Exception as e:
             self.logger.error(f"处理过程中出错: {e}")
             return False
-
-    def process_dataset(self, df, output_dir, dataset_name):
-        """处理单个数据集的所有步骤"""
-        # 生成三元组
-        triples = self.generate_triples(df)
-        self.logger.info(f"已生成 {dataset_name} 数据集的三元组")
-
-        # 保存三元组
-        self.save_triples_to_dir(triples, output_dir)
-
-        # 构建知识图谱
-        graph = self.build_knowledge_graph(triples)
-        self.logger.info(f"已构建 {dataset_name} 数据集的知识图谱")
-
-        # 保存图
-        self.save_graph_as_pt(graph, output_dir)
-
-        # 可视化图谱
-        # self.visualize_graph(graph, dataset_name)
-
-        return triples
 
 
 # 执行三元组生成并构建知识图谱
