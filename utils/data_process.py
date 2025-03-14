@@ -56,8 +56,27 @@ class GraphGenerator:
         """获取特定维度和标签的编码值"""
         return self.status_encoding.get(f"{dimension}_{label}")
 
-    def split_data(self, train_ratio=0.6, val_ratio=0.2):
-        df = self.df
+    def split_data(self, train_ratio=0.6, val_ratio=0.2, seed=42):
+        """
+        使用固定随机种子划分数据集
+
+        Args:
+            train_ratio: 训练集比例
+            val_ratio: 验证集比例
+            seed: 随机种子
+
+        Returns:
+            train_df, val_df, test_df
+        """
+        # 设置随机种子
+        import numpy as np
+        np.random.seed(seed)
+
+        df = self.df.copy()
+
+        # 随机打乱数据
+        shuffled_indices = np.random.permutation(len(df))
+        df = df.iloc[shuffled_indices].reset_index(drop=True)
 
         total_len = len(df)
         train_end = int(total_len * train_ratio)
@@ -67,7 +86,8 @@ class GraphGenerator:
         val_df = df[train_end:val_end]
         test_df = df[val_end:]
 
-        self.logger.info(f"数据集已划分完成，Train：{len(train_df)}, Val：{len(val_df)}, Test：{len(test_df)}")
+        self.logger.info(
+            f"数据集已随机划分完成 (seed={seed}), Train：{len(train_df)}, Val：{len(val_df)}, Test：{len(test_df)}")
 
         return train_df, val_df, test_df
 
@@ -201,8 +221,16 @@ class GraphGenerator:
 
         return graph
 
-    def save_graph_as_pt(self, graph, output_dir, filename="knowledge_graph.pt"):
-        """将构建的图保存为 PyTorch Geometric 格式到指定目录"""
+    def save_graph_as_pt(self, graph, output_dir, dataset_type="train", filename="knowledge_graph.pt"):
+        """
+        将构建的图保存为 PyTorch Geometric 格式，并生成训练/验证/测试掩码
+
+        Args:
+            graph: NetworkX图
+            output_dir: 输出目录
+            dataset_type: 数据集类型 ("train", "val", "test")
+            filename: 输出文件名
+        """
         edge_index = []
         edge_attr = []
         node_mapping = {node: idx for idx, node in enumerate(graph.nodes)}
@@ -264,12 +292,32 @@ class GraphGenerator:
         # 创建行为标签张量
         behavior_labels = torch.tensor(behavior_labels, dtype=torch.long)
 
+        # 生成掩码
+        num_nodes = len(graph.nodes)
+        train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+
+        # 根据数据集类型，为所有节点设置相应的掩码
+        # 对于训练集，只有训练掩码为真
+        # 对于验证集，只有验证掩码为真
+        # 对于测试集，只有测试掩码为真
+        if dataset_type == "train":
+            train_mask.fill_(True)
+        elif dataset_type == "val":
+            val_mask.fill_(True)
+        else:  # test
+            test_mask.fill_(True)
+
         # 创建PyTorch Geometric数据对象
         data = Data(
             x=node_features,
             edge_index=edge_index,
             edge_attr=edge_attr,
-            y=behavior_labels  # 保存节点行为标签信息
+            y=behavior_labels,
+            train_mask=train_mask,
+            val_mask=val_mask,
+            test_mask=test_mask
         )
 
         # 保存时间和流程属性（作为元数据）
@@ -325,14 +373,14 @@ class GraphGenerator:
         self.logger.info(f"已构建 {dataset_name} 数据集的知识图谱")
 
         # 保存图
-        self.save_graph_as_pt(graph, output_dir)
+        self.save_graph_as_pt(graph, output_dir, dataset_name)
 
         # 可视化图谱(可选)
         # self.visualize_graph(graph, dataset_name)
 
         return triples
 
-    def process(self):
+    def process(self, seed=42):
         """执行完整的三元组生成流程"""
         try:
             # 1. 加载数据，初始化编码
@@ -341,7 +389,7 @@ class GraphGenerator:
             self.save_encoding_info()  # 保存编码信息
 
             # 2. 划分数据集
-            train_df, val_df, test_df = self.split_data()
+            train_df, val_df, test_df = self.split_data(seed=seed)
 
             # 3. 为每个数据集创建目录
             train_dir = os.path.join(self.output_dir, "train")

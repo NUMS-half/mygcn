@@ -41,26 +41,9 @@ def preprocess_data(data):
 
     logger.info(f"总节点数: {data.num_nodes}, 有标签节点数: {valid_mask.sum().item()}")
 
-    # 确保数据有 train_mask, val_mask, test_mask
-    num_nodes = data.num_nodes
+    # 检查数据是否包含掩码
     if not hasattr(data, "train_mask") or not hasattr(data, "val_mask") or not hasattr(data, "test_mask"):
-        logger.warning("数据缺少 train_mask / val_mask / test_mask，正在自动生成...")
-
-        indices = torch.arange(num_nodes)
-        train_size = int(0.6 * num_nodes)
-        val_size = int(0.2 * num_nodes)
-
-        train_mask = torch.zeros(num_nodes, dtype=torch.bool)
-        val_mask = torch.zeros(num_nodes, dtype=torch.bool)
-        test_mask = torch.zeros(num_nodes, dtype=torch.bool)
-
-        train_mask[indices[:train_size]] = True
-        val_mask[indices[train_size:train_size + val_size]] = True
-        test_mask[indices[train_size + val_size:]] = True
-
-        data.train_mask = train_mask
-        data.val_mask = val_mask
-        data.test_mask = test_mask
+        logger.warning("数据缺少训练/验证/测试掩码，请先运行数据预处理脚本生成")
 
     return data
 
@@ -104,6 +87,8 @@ def train():
         # 学习率调度器更新
         scheduler.step(val_acc)
 
+
+
         # 记录最佳模型（基于验证准确率）
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -121,6 +106,7 @@ def train():
 
     return best_model_path
 
+
 def evaluate(model, split):
     """在验证集或测试集上评估模型"""
     data = preprocess_data(load_data(split))
@@ -128,8 +114,17 @@ def evaluate(model, split):
     with torch.no_grad():
         out = model(data.x, data.edge_index)
         pred = out.argmax(dim=1)
-        correct = pred[data.val_mask].eq(data.y[data.val_mask]).sum().item()
-        acc = correct / data.val_mask.sum().item()
+
+        # 根据数据集类型选择正确的掩码
+        if split == "val":
+            mask = data.val_mask
+        elif split == "test":
+            mask = data.test_mask
+        else:
+            raise ValueError(f"不支持的数据集类型: {split}")
+
+        correct = pred[mask].eq(data.y[mask]).sum().item()
+        acc = correct / mask.sum().item()
     return acc
 
 
