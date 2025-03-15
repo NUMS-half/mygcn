@@ -1,5 +1,6 @@
-import pandas as pd
 import random
+import pandas as pd
+from utils.helper import set_seed
 from utils.data_config import LABELS_MAPPING
 
 
@@ -12,7 +13,7 @@ def add_noise(label):
     """
     给定真实标签，随机调整一定比例，使数据更加贴合实际
     """
-    noise_probability = 0.05  # 2.5% 概率随机改变标签
+    noise_probability = 0.05  # 5% 概率随机改变标签
     if random.random() < noise_probability:
         return random.choice(list(LABELS_MAPPING.keys()))  # 随机分配一个新标签
     return label
@@ -43,33 +44,46 @@ def predict_behavior(row):
     if is_blacklist or is_high_risk:
         label = 5  # 信用恶化（黑名单或高风险用户）
     elif "账单问题" in feedback:
-        if is_high_value and high_arpu:
-            label = 1  # 高价值用户可能升级套餐
-        elif is_low_value and low_arpu:
-            label = 2  # 低价值用户可能会降级
+        if is_complaint and is_low_value and low_arpu:
+            label = 2  # 投诉 + 低价值用户 + 低消费 -> 套餐降级
+        elif is_complaint and is_high_value and high_arpu:
+            label = 1  # 投诉 + 高价值用户 + 高消费 -> 套餐升级
         else:
             label = 6  # 账单问题但影响不大，保持现状
     elif "流量" in feedback:
-        if high_traffic and high_arpu:
-            label = 3  # 流量超套投诉（高流量 + 高消费）
-        elif low_traffic and low_arpu:
-            label = 2  # 低流量用户可能降级
+        if is_complaint and high_traffic and high_arpu:
+            label = 3  # 高流量 + 高消费 + 投诉 -> 流量超套投诉
+        elif is_complaint and low_traffic and low_arpu:
+            label = 2  # 低流量 + 低消费 + 投诉 -> 降级
+        elif is_high_value and high_arpu:
+            label = 1  # 高价值用户 + 高消费 -> 可能升级
         else:
             label = 6  # 影响不大，保持现状
     elif "套餐问题" in feedback:
-        if high_package and is_high_value:
+        if is_high_value and high_package:
             label = 1  # 高套餐 + 高价值用户可能升级
-        elif low_package and is_low_value:
+        elif is_low_value and low_package:
             label = 2  # 低套餐 + 低价值用户可能降级
+        elif is_complaint:
+            label = 2  # 投诉用户可能降级
         else:
             label = 6  # 影响不大，保持现状
     elif is_silent:
-        if high_arpu:
+        if high_arpu and is_high_value:
             label = 4  # 高消费用户可能绑定融合业务
-        else:
+        elif low_arpu and is_low_value:
             label = 6  # 低消费用户更可能保持现状
-    elif "网络问题" in feedback and (low_package or low_arpu):
-        label = 0  # 低套餐 + 网络问题 -> 可能流失
+        elif is_blacklist or is_high_risk:
+            label = 5  # 信用恶化
+        else:
+            label = 6  # 保持现状
+    elif "网络问题" in feedback:
+        if is_complaint and low_package:
+            label = 0  # 低套餐 + 投诉用户 -> 可能流失
+        elif is_complaint and high_package:
+            label = 1  # 高套餐 + 投诉用户 -> 可能升级
+        else:
+            label = 6  # 影响不大，保持现状
     else:
         label = 6  # 其他情况保持现状
 
@@ -81,6 +95,7 @@ def process_data():
     """
     读取数据、预测 BEHAVIOR_LABEL 并保存
     """
+    set_seed(seed=42)
     df = pd.read_csv(INPUT_FILE, encoding="utf-8-sig")
 
     # 预测每个用户的行为标签

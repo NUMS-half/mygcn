@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+from utils.helper import set_seed
 from utils.logger import get_logger
 from torch_geometric.data import Data
 from utils.data_config import DIMENSION_MAPPINGS
@@ -27,9 +28,9 @@ class GraphGenerator:
         self.output_dir = output_dir
         self.df = None
         self.status_encoding = {}
-
         self.logger = get_logger("GraphGenerator")  # 配置日志
 
+    # √
     def load_data(self):
         """加载CSV数据"""
         try:
@@ -39,6 +40,7 @@ class GraphGenerator:
             self.logger.error(f"数据加载失败: {e}")
             raise
 
+    # √
     def initialize_encoding(self):
         """为每个维度初始化独立的编码空间"""
         start_id = 0
@@ -52,32 +54,25 @@ class GraphGenerator:
 
         self.logger.info(f"状态编码初始化完成，共{len(self.status_encoding)}个编码")
 
+    # √
     def get_status_code(self, dimension, label):
         """获取特定维度和标签的编码值"""
         return self.status_encoding.get(f"{dimension}_{label}")
 
-    def split_data(self, train_ratio=0.6, val_ratio=0.2, seed=42):
+    # √
+    def split_data(self, train_ratio=0.6, val_ratio=0.2):
         """
-        使用固定随机种子划分数据集
+        划分数据集
 
         Args:
             train_ratio: 训练集比例
             val_ratio: 验证集比例
-            seed: 随机种子
 
         Returns:
             train_df, val_df, test_df
         """
-        # 设置随机种子
-        import numpy as np
-        np.random.seed(seed)
 
-        df = self.df.copy()
-
-        # 随机打乱数据
-        shuffled_indices = np.random.permutation(len(df))
-        df = df.iloc[shuffled_indices].reset_index(drop=True)
-
+        df = self.df
         total_len = len(df)
         train_end = int(total_len * train_ratio)
         val_end = train_end + int(total_len * val_ratio)
@@ -87,10 +82,11 @@ class GraphGenerator:
         test_df = df[val_end:]
 
         self.logger.info(
-            f"数据集已随机划分完成 (seed={seed}), Train：{len(train_df)}, Val：{len(val_df)}, Test：{len(test_df)}")
+            f"数据集已划分完成, Train：{len(train_df)}, Val：{len(val_df)}, Test：{len(test_df)}")
 
         return train_df, val_df, test_df
 
+    # √
     @staticmethod
     def parse_combined_labels(lab_combined_str):
         """解析组合标签字符串为标签列表"""
@@ -98,6 +94,7 @@ class GraphGenerator:
         parts = cleaned.split('","')
         return [part.strip('"') for part in parts]
 
+    # √
     def generate_triples(self, df):
         """从指定的 DataFrame 生成三元组数据"""
         # 初始化每个维度的三元组列表
@@ -156,6 +153,7 @@ class GraphGenerator:
             except Exception as e:
                 self.logger.error(f"保存三元组失败 '{dimension}': {e}")
 
+    # √
     def save_encoding_info(self):
         """将标签编码映射信息保存为CSV文件"""
         # 准备映射数据
@@ -180,8 +178,9 @@ class GraphGenerator:
         except Exception as e:
             self.logger.error(f"保存编码映射信息失败: {e}")
 
-    @staticmethod
-    def build_knowledge_graph(triples, df):
+    # √
+    def build_knowledge_graph(self, triples, df):
+        set_seed(42)
         graph = nx.Graph()
 
         # 创建映射
@@ -331,6 +330,7 @@ class GraphGenerator:
         torch.save(data, file_path)
         self.logger.info(f"图数据已保存为: {file_path}")
 
+
     @staticmethod
     def visualize_graph(graph, dataset_name, save=False):
         """可视化知识图谱"""
@@ -361,6 +361,7 @@ class GraphGenerator:
 
     def process_dataset(self, df, output_dir, dataset_name):
         """处理单个数据集的所有步骤"""
+        set_seed(42)
         # 生成三元组
         triples = self.generate_triples(df)
         self.logger.info(f"已生成 {dataset_name} 数据集的三元组")
@@ -380,16 +381,17 @@ class GraphGenerator:
 
         return triples
 
-    def process(self, seed=42):
+    def process(self):
         """执行完整的三元组生成流程"""
         try:
+            set_seed(42)
             # 1. 加载数据，初始化编码
             self.load_data()  # 加载数据
             self.initialize_encoding()  # 初始化编码
             self.save_encoding_info()  # 保存编码信息
 
             # 2. 划分数据集
-            train_df, val_df, test_df = self.split_data(seed=seed)
+            train_df, val_df, test_df = self.split_data()
 
             # 3. 为每个数据集创建目录
             train_dir = os.path.join(self.output_dir, "train")

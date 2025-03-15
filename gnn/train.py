@@ -2,19 +2,13 @@ import torch
 import numpy as np
 from gnn.gcn import GCN
 import torch.nn.functional as F
+from utils.helper import set_seed
 from utils.logger import get_logger
 
 # 设置日志记录器
 logger = get_logger("Train")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# 固定随机种子
-def set_seed(seed=42):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 def load_data(split):
     """加载指定分割的数据"""
@@ -87,8 +81,6 @@ def train():
         # 学习率调度器更新
         scheduler.step(val_acc)
 
-
-
         # 记录最佳模型（基于验证准确率）
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -140,7 +132,7 @@ def test():
 
 if __name__ == "__main__":
     try:
-        set_seed()
+        set_seed(seed=42)
         best_model_path = train()
         if best_model_path:
             test()

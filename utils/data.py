@@ -5,7 +5,7 @@ import sys
 def run_scripts():
     # 定义要执行的脚本列表
     scripts = [
-        # "data_generate.py",
+        "data_generate.py",
         "label_generate.py",
         "data_process.py"
     ]

@@ -6,7 +6,7 @@ from torch.nn import LayerNorm
 
 # 1. Base GCNConv - 2 layers
 class GCN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.35, edge_dropout=0.1):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3, edge_dropout=0.1):
         super(GCN, self).__init__()
         self.conv1 = GCNConv(input_dim, hidden_dim)
         self.ln1 = LayerNorm(hidden_dim)

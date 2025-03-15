@@ -2,6 +2,7 @@ import os
 import random
 import pandas as pd
 from utils.data_config import *
+from utils.helper import set_seed
 from utils.logger import get_logger
 from datetime import datetime, timedelta
 
@@ -144,12 +145,12 @@ class DataGenerator:
             str: 保存的文件路径，失败则返回None
         """
         try:
+            set_seed(seed=42)
             data = self.generate_data(num_samples)
             return self.save_to_csv(data, filename)
         except Exception as e:
             self.logger.error(f"数据生成过程中出错: {e}")
             return None
-
 
 def main():
     """主函数，用于直接执行脚本时运行"""
