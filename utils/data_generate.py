@@ -145,7 +145,7 @@ class DataGenerator:
             str: 保存的文件路径，失败则返回None
         """
         try:
-            set_seed(seed=42)
+            set_seed()
             data = self.generate_data(num_samples)
             return self.save_to_csv(data, filename)
         except Exception as e:

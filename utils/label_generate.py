@@ -2,18 +2,21 @@ import random
 import pandas as pd
 from utils.helper import set_seed
 from utils.data_config import LABELS_MAPPING
+from utils.logger import get_logger
 
+logger = get_logger("LabelGenerator")
 
 # 读取数据
 INPUT_FILE = "../data/raw/generated_user_behavior_data.csv"
 OUTPUT_FILE = "../data/raw/labeled_user_behavior_data.csv"
 
+noise = 0.025  # 2.5% 概率随机改变标签
 
 def add_noise(label):
     """
     给定真实标签，随机调整一定比例，使数据更加贴合实际
     """
-    noise_probability = 0.05  # 5% 概率随机改变标签
+    noise_probability = noise
     if random.random() < noise_probability:
         return random.choice(list(LABELS_MAPPING.keys()))  # 随机分配一个新标签
     return label
@@ -95,7 +98,7 @@ def process_data():
     """
     读取数据、预测 BEHAVIOR_LABEL 并保存
     """
-    set_seed(seed=42)
+    set_seed()
     df = pd.read_csv(INPUT_FILE, encoding="utf-8-sig")
 
     # 预测每个用户的行为标签
@@ -103,7 +106,7 @@ def process_data():
 
     # 保存带标签的数据
     df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
-    print(f"已生成 {len(df)} 条数据（带噪声），保存至 {OUTPUT_FILE}")
+    logger.info(f"已生成 {len(df)} 条数据（噪声：{noise * 100}%），保存至 {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

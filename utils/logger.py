@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 
 # 全局日志配置
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = logging.DEBUG
 LOG_FORMAT = "%(asctime)s-%(name)s-%(levelname)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 LOG_DIR = "../logs"
