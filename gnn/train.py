@@ -1,12 +1,19 @@
+import os
 import time
 import torch
-from gnn.gcn import GCN
+from gnn.model import StableGAT
+import matplotlib.pyplot as plt
 import torch.nn.functional as F
-from utils.helper import set_seed
-from utils.logger import get_logger
+from utils.helper import set_seed, get_logger
 
 # 设置日志记录器
 logger = get_logger("Train")
+
+output_dir = "../output"
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+    logger.info(f"已创建输出目录: {output_dir}")
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -48,6 +55,7 @@ def preprocess_data(data):
 
     return data
 
+
 def train():
     """训练 GCN 模型"""
 
@@ -57,15 +65,23 @@ def train():
     train_data = preprocess_data(load_data("train"))
     val_data = preprocess_data(load_data("val"))
 
-    model = GCN(train_data.num_features, 128, 7).to(device)
+    model = StableGAT(train_data.num_features, 128, 7).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 
-
     # 早停参数
-    patience = 150
+    patience = 100
     counter = 0
     best_val_acc = 0.0
-    best_model_path = "best_model.pth"
+    best_model_path = os.path.join(output_dir, "model")
+    if not os.path.exists(best_model_path):
+        os.makedirs(best_model_path)
+        logger.info(f"已创建模型输出目录: {best_model_path}")
+
+    # 添加用于跟踪指标的列表
+    train_losses = []
+    val_losses = []  # 新增：记录验证损失
+    val_accuracies = []
+    epochs = []
 
     for epoch in range(1000):
         model.train()
@@ -83,18 +99,30 @@ def train():
         model.eval()
         with torch.no_grad():
             out = model(val_data.x, val_data.edge_index)
+
+            # 计算验证损失
+            val_loss = F.nll_loss(out[val_data.val_mask], val_data.y[val_data.val_mask])
+
+            # 计算验证准确率
             pred = out.argmax(dim=1)
             correct = pred[val_data.val_mask].eq(val_data.y[val_data.val_mask]).sum().item()
             val_acc = correct / val_data.val_mask.sum().item()
 
+        # 记录每个epoch的指标
+        train_losses.append(loss.item())
+        val_losses.append(val_loss.item())
+        val_accuracies.append(val_acc)
+        epochs.append(epoch)
+
         # 每10个epoch打印一次训练和验证准确率
         if epoch % 10 == 0:
-            logger.info(f"Epoch {epoch}: Loss {loss.item():.4f}, Val Acc {val_acc:.4f}")
+            logger.info(
+                f"Epoch {epoch}: Train Loss {loss.item():.4f}, Val Loss {val_loss.item():.4f}, Val Acc {val_acc:.4f}")
 
         # 记录最佳模型（基于验证准确率）
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save(model.state_dict(), best_model_path)
+            torch.save(model.state_dict(), os.path.join(best_model_path, "best_model.pth"))
             counter = 0
             logger.info(f"模型改进，当前最佳验证准确率: {best_val_acc:.4f}")
         else:
@@ -115,7 +143,49 @@ def train():
     formatted_time = f"{seconds:02d}\"{milliseconds:02d}"
     logger.info(f"训练完成，总耗时: {formatted_time}")
 
+    # 添加可视化代码 - 更新函数参数
+    visualize_training_process(epochs, train_losses, val_losses, val_accuracies)
+
     return best_model_path
+
+
+def visualize_training_process(epochs, train_losses, val_losses, val_accuracies):
+    """可视化训练过程中的损失和准确率变化"""
+
+    # 创建输出目录
+    output_path = os.path.join(output_dir, "figures")
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+        logger.info(f"已创建图片输出目录: {output_path}")
+
+    # 创建图像 - 使用2个子图而不是3个
+    plt.figure(figsize=(12, 5))
+
+    # 绘制训练和验证损失子图（合并在一起）
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, train_losses, 'b-', label='Train Loss', linewidth=2.5)
+    plt.plot(epochs, val_losses, 'r-', label='Validate Loss', linewidth=2.5)
+    plt.title('Loss Curves', fontsize=14)
+    plt.xlabel('Epochs', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.legend(loc='upper right')
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    # 绘制验证准确率子图
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, val_accuracies, 'g-', linewidth=2.5)
+    plt.title('Validate Accuracy', fontsize=14)
+    plt.xlabel('Epochs', fontsize=12)
+    plt.ylabel('Accuracy', fontsize=12)
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    # 调整布局并保存图像
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path, "training.png"), dpi=300, bbox_inches='tight')
+    logger.info(f"训练过程可视化已保存至 {output_path}/training.png")
+
+    # 关闭图表以释放内存
+    plt.close('all')
 
 def evaluate(model, split):
     """在验证集或测试集上评估模型"""
@@ -141,8 +211,8 @@ def evaluate(model, split):
 def test():
     """测试模型"""
     test_data = preprocess_data(load_data("test"))
-    model = GCN(test_data.x.shape[1], 128, 7).to(device)
-    model.load_state_dict(torch.load("best_model.pth", weights_only=True))
+    model = StableGAT(test_data.x.shape[1], 128, 7).to(device)
+    model.load_state_dict(torch.load(os.path.join(output_dir, "model/best_model.pth"), weights_only=True))
     test_acc = evaluate(model, "test")
     logger.info(f"测试集准确率: {test_acc:.6f}")
     return test_acc

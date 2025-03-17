@@ -3,9 +3,8 @@ import torch
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
-from utils.helper import set_seed
-from utils.logger import get_logger
 from torch_geometric.data import Data
+from utils.helper import set_seed, get_logger
 from utils.data_config import DIMENSION_MAPPINGS
 
 

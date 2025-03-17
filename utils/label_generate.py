@@ -1,8 +1,7 @@
 import random
 import pandas as pd
-from utils.helper import set_seed
 from utils.data_config import LABELS_MAPPING
-from utils.logger import get_logger
+from utils.helper import set_seed, get_logger
 
 logger = get_logger("LabelGenerator")
 
