@@ -3,6 +3,7 @@
 __all__ = [
     "DATA_SIZE",
     "DIMENSION_MAPPINGS",
+    "DIMENSION_TO_RELATION",
     "USER_TYPE_WEIGHTS",
     "FEEDBACK_PROCESS",
     "LABELS_MAPPING"
@@ -14,9 +15,8 @@ LABELS_MAPPING = {
     1: {"name": "套餐升级", "description": "用户将升级至更高档位套餐或叠加增值服务"},
     2: {"name": "套餐降级", "description": "用户将降低套餐档位或取消增值服务"},
     3: {"name": "流量超套投诉", "description": "用户将可能因为流量超额产生高费用并提交投诉工单"},
-    4: {"name": "绑定融合业务", "description": "用户新增宽带/IPTV绑定或加入家庭共享套餐等融合业务"},
-    5: {"name": "信用恶化", "description": "用户信用将会变差，考虑加入黑名单或灰名单"},
-    6: {"name": "保持现状", "description": "用户将不会发生上述任何行为变化"}
+    4: {"name": "信用恶化", "description": "用户信用将会变差，考虑加入黑名单或灰名单"},
+    5: {"name": "保持现状", "description": "用户将不会发生上述任何行为变化"}
 }
 
 # 数据量设置
@@ -86,6 +86,24 @@ DIMENSION_MAPPINGS = {
     "traffic_exceed": TRAFFIC_EXCEED_LABELS,
     "arpu": ARPU_LABELS,
     "mou": MOU_LABELS
+}
+
+# 边类型映射
+DIMENSION_TO_RELATION = {
+    # 用户特征关系
+    'value': 0,
+    'credit': 0,
+    'feedback': 0,
+
+    # 用户套餐关系
+    'package': 1,
+    'arpu': 1,
+
+    # 用户行为关系
+    'traffic': 2,
+    'voice_exceed': 2,
+    'traffic_exceed': 2,
+    'mou': 2
 }
 
 # 用户类型比例

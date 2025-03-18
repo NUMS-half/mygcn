@@ -5,7 +5,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from torch_geometric.data import Data
 from utils.helper import set_seed, get_logger
-from utils.data_config import DIMENSION_MAPPINGS
+from utils.data_config import DIMENSION_MAPPINGS, DIMENSION_TO_RELATION
 
 
 class GraphGenerator:
@@ -191,14 +191,17 @@ class GraphGenerator:
 
         # 预处理：收集所有需要添加的节点和边避免重复
         nodes_to_add = set()
-        edges_to_add = set()
+        edges_to_add = []  # 使用列表存储边及其属性
 
         for dimension, dimension_triples in triples.items():
             for order_id, label, status_code in dimension_triples:
                 if label == 1:
                     nodes_to_add.add((order_id, 'order'))
                     nodes_to_add.add((status_code, 'status'))
-                    edges_to_add.add((order_id, status_code))
+
+                    # 获取该dimension对应的关系类型
+                    relation_type = DIMENSION_TO_RELATION.get(dimension, -1)
+                    edges_to_add.append((order_id, status_code, relation_type))
 
         # 批量添加节点和边
         for node, node_type in nodes_to_add:
@@ -207,120 +210,10 @@ class GraphGenerator:
             else:
                 graph.add_node(node, type=node_type)
 
-        for u, v in edges_to_add:
-            graph.add_edge(u, v, label=1)
+        for u, v, relation_type in edges_to_add:
+            graph.add_edge(u, v, label=1, relation_type=relation_type)
 
         return graph
-
-    # def save_graph_as_pt(self, graph, output_dir, dataset_type="train", filename="knowledge_graph.pt"):
-    #     """
-    #     将构建的图保存为 PyTorch Geometric 格式，并生成训练/验证/测试掩码
-    #
-    #     Args:
-    #         graph: NetworkX图
-    #         output_dir: 输出目录
-    #         dataset_type: 数据集类型 ("train", "val", "test")
-    #         filename: 输出文件名
-    #     """
-    #     edge_index = []
-    #     edge_attr = []
-    #     node_mapping = {node: idx for idx, node in enumerate(graph.nodes)}
-    #     behavior_labels = []  # 存储节点行为标签信息
-    #     time_attrs = []  # 存储时间属性
-    #     process_attrs = []  # 存储流程属性
-    #
-    #     # 收集节点属性
-    #     for node in graph.nodes():
-    #         node_attr = graph.nodes[node]
-    #         # 收集行为标签
-    #         if node_attr.get('type') == 'order' and 'behavior_label' in node_attr:
-    #             behavior_labels.append(int(node_attr['behavior_label']))
-    #         else:
-    #             behavior_labels.append(-1)  # 对于非订单节点或没有行为标签的节点
-    #
-    #         # 收集时间和流程属性
-    #         if node_attr.get('type') == 'order':
-    #             time_attrs.append(node_attr.get('time', ''))
-    #             process_attrs.append(node_attr.get('process', ''))
-    #         else:
-    #             time_attrs.append('')
-    #             process_attrs.append('')
-    #
-    #     # 为节点分配ID并更新边的索引
-    #     for u, v, data in graph.edges(data=True):
-    #         edge_index.append([node_mapping[u], node_mapping[v]])
-    #         edge_attr.append([data['label']])
-    #
-    #     if not edge_index:  # 检查是否有边
-    #         self.logger.warning(f"图中没有边，跳过保存 {filename}")
-    #         return
-    #
-    #     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-    #     edge_attr = torch.tensor(edge_attr, dtype=torch.float)
-    #
-    #     # 节点特征 (1类用户 + 42类行为)
-    #     node_features = []
-    #     for node in graph.nodes():
-    #         node_attr = graph.nodes[node]
-    #         if node_attr.get('type') == 'order':
-    #             # 用户节点 - 设置第一维为1，其余为0
-    #             features = [0.0] * 43
-    #             features[0] = 1.0  # 用户特征标识
-    #             node_features.append(features)
-    #         else:  # status节点
-    #             # 状态节点 - 对应状态码设置为1
-    #             features = [0.0] * 43
-    #             try:
-    #                 status_code = int(node)  # 节点ID实际是状态码
-    #                 if 0 <= status_code < 42:  # 确保状态码在有效范围内
-    #                     features[status_code + 1] = 1.0  # 从索引1开始表示42种行为
-    #             except ValueError:
-    #                 pass  # 非数字状态码使用全 0 特征
-    #             node_features.append(features)
-    #
-    #     node_features = torch.tensor(node_features, dtype=torch.float)
-    #
-    #     # 创建行为标签张量
-    #     behavior_labels = torch.tensor(behavior_labels, dtype=torch.long)
-    #
-    #     # 生成掩码
-    #     num_nodes = len(graph.nodes)
-    #     train_mask = torch.zeros(num_nodes, dtype=torch.bool)
-    #     val_mask = torch.zeros(num_nodes, dtype=torch.bool)
-    #     test_mask = torch.zeros(num_nodes, dtype=torch.bool)
-    #
-    #     # 根据数据集类型，为所有节点设置相应的掩码
-    #     # 对于训练集，只有训练掩码为真
-    #     # 对于验证集，只有验证掩码为真
-    #     # 对于测试集，只有测试掩码为真
-    #     if dataset_type == "train":
-    #         train_mask.fill_(True)
-    #     elif dataset_type == "val":
-    #         val_mask.fill_(True)
-    #     else:  # test
-    #         test_mask.fill_(True)
-    #
-    #     # 创建PyTorch Geometric数据对象
-    #     data = Data(
-    #         x=node_features,
-    #         edge_index=edge_index,
-    #         edge_attr=edge_attr,
-    #         y=behavior_labels,
-    #         train_mask=train_mask,
-    #         val_mask=val_mask,
-    #         test_mask=test_mask
-    #     )
-    #
-    #     # 保存时间和流程属性（作为元数据）
-    #     time_dict = {i: attr for i, attr in enumerate(time_attrs) if attr}
-    #     process_dict = {i: attr for i, attr in enumerate(process_attrs) if attr}
-    #     data.time_attr = time_dict
-    #     data.process_attr = process_dict
-    #
-    #     # 保存为 .pt 文件
-    #     file_path = os.path.join(output_dir, filename)
-    #     torch.save(data, file_path)
-    #     self.logger.info(f"图数据已保存为: {file_path}")
 
     def save_graph_as_pt(self, graph, output_dir, dataset_type="train", filename="knowledge_graph.pt"):
         """
@@ -380,6 +273,7 @@ class GraphGenerator:
         src_nodes = []
         dst_nodes = []
         edge_attrs = []
+        edge_types = []  # 新增：收集边类型
 
         # 收集所有边并标准化源-目标关系
         edges_data = []
@@ -387,22 +281,25 @@ class GraphGenerator:
             src_idx = node_mapping[u]
             dst_idx = node_mapping[v]
             label = data.get('label', 1)
-            edges_data.append((src_idx, dst_idx, label))
+            relation_type = data.get('relation_type', -1)  # 获取边的关系类型
+            edges_data.append((src_idx, dst_idx, label, relation_type))
 
         # 确定性排序边
         edges_data.sort()
 
-        # 分离源节点、目标节点和边属性
-        for src, dst, label in edges_data:
+        # 分离源节点、目标节点、边属性和边类型
+        for src, dst, label, relation_type in edges_data:
             src_nodes.append(src)
             dst_nodes.append(dst)
             edge_attrs.append([float(label)])
+            edge_types.append(relation_type)  # 添加边的类型
 
         # 5. 创建确定性张量
         # 直接创建[2, num_edges]格式的edge_index，避免使用t()
         if src_nodes:
             edge_index = torch.tensor([src_nodes, dst_nodes], dtype=torch.long)
             edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
+            edge_type = torch.tensor(edge_types, dtype=torch.long)  # 将边类型转换为张量
         else:
             self.logger.warning(f"图中没有边，跳过保存 {filename}")
             return
@@ -428,6 +325,7 @@ class GraphGenerator:
             x=node_features,
             edge_index=edge_index,
             edge_attr=edge_attr,
+            edge_type=edge_type,  # 添加边类型属性
             y=behavior_labels,
             train_mask=train_mask,
             val_mask=val_mask,
@@ -449,6 +347,7 @@ class GraphGenerator:
         # 10. 输出验证信息用于调试（可选）
         self.logger.debug(f"节点数: {num_nodes}, 边数: {len(src_nodes)}")
         self.logger.debug(f"edge_index shape: {edge_index.shape}")
+        self.logger.debug(f"edge_type shape: {edge_type.shape}")  # 新增日志输出
 
     @staticmethod
     def visualize_graph(graph, dataset_name, save=False):
