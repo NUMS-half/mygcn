@@ -26,8 +26,9 @@ class GraphGenerator:
         self.input_file = input_file
         self.output_dir = output_dir
         self.df = None
+        self.triples = None
         self.status_encoding = {}
-        self.logger = get_logger("GraphGenerator")  # 配置日志
+        self.logger = get_logger("GraphGenerator")
 
     def load_data(self):
         """加载CSV数据"""
@@ -55,32 +56,6 @@ class GraphGenerator:
         """获取特定维度和标签的编码值"""
         return self.status_encoding.get(f"{dimension}_{label}")
 
-    def split_data(self, train_ratio=0.6, val_ratio=0.2):
-        """
-        划分数据集
-
-        Args:
-            train_ratio: 训练集比例
-            val_ratio: 验证集比例
-
-        Returns:
-            train_df, val_df, test_df
-        """
-
-        df = self.df
-        total_len = len(df)
-        train_end = int(total_len * train_ratio)
-        val_end = train_end + int(total_len * val_ratio)
-
-        train_df = df[:train_end]
-        val_df = df[train_end:val_end]
-        test_df = df[val_end:]
-
-        self.logger.info(
-            f"数据集已划分完成, Train：{len(train_df)}, Val：{len(val_df)}, Test：{len(test_df)}")
-
-        return train_df, val_df, test_df
-
     @staticmethod
     def parse_combined_labels(lab_combined_str):
         """解析组合标签字符串为标签列表"""
@@ -88,8 +63,8 @@ class GraphGenerator:
         parts = cleaned.split('","')
         return [part.strip('"') for part in parts]
 
-    def generate_triples(self, df):
-        """从指定的 DataFrame 生成三元组数据"""
+    def generate_triples(self):
+        """从 self.df 生成三元组数据"""
         # 初始化每个维度的三元组列表
         triples = {dimension: [] for dimension in DIMENSION_MAPPINGS}
 
@@ -100,7 +75,7 @@ class GraphGenerator:
                 label_dimension_map[label] = dimension
 
         # 处理每行数据
-        for _, row in df.iterrows():
+        for _, row in self.df.iterrows():
             order_id = row['DYPT.ORDER_ID']
             labels = self.parse_combined_labels(row['DYPT.LAB_NAM_COMBINED'])
 
@@ -125,11 +100,13 @@ class GraphGenerator:
                         if other_code != dimension_codes[dimension]:
                             triples[dimension].append((order_id, 0, other_code))
 
+        self.triples = triples
+        self.logger.info(f"已生成数据集的三元组")
         return triples
 
-    def save_triples_to_dir(self, triples, output_dir):
+    def save_triples_to_dir(self):
         """将三元组保存到指定目录"""
-        for dimension, dimension_triples in triples.items():
+        for dimension, dimension_triples in self.triples.items():
             if not dimension_triples:
                 self.logger.warning(f"维度 '{dimension}' 没有三元组数据")
                 continue
@@ -138,7 +115,7 @@ class GraphGenerator:
                 dimension_triples,
                 columns=["OrderID", "Label", "StatusCode"]
             )
-            file_name = os.path.join(output_dir, f"user_{dimension}_triples.csv")
+            file_name = os.path.join(self.output_dir, f"user_{dimension}_triples.csv")
 
             try:
                 triples_df.to_csv(file_name, index=False, encoding='utf-8-sig')
@@ -170,14 +147,14 @@ class GraphGenerator:
         except Exception as e:
             self.logger.error(f"保存编码映射信息失败: {e}")
 
-    @staticmethod
-    def build_knowledge_graph(triples, df):
+
+    def build_knowledge_graph(self):
         set_seed()
         graph = nx.Graph()
 
         # 创建映射
         order_attributes = {}
-        for _, row in df.iterrows():
+        for _, row in self.df.iterrows():
             order_id = row['DYPT.ORDER_ID']
             behavior_label = row.get('BEHAVIOR_LABEL', None)
             accept_dt = row.get('DYPT.ACCEPT_DT', "")
@@ -193,7 +170,7 @@ class GraphGenerator:
         nodes_to_add = set()
         edges_to_add = []  # 使用列表存储边及其属性
 
-        for dimension, dimension_triples in triples.items():
+        for dimension, dimension_triples in self.triples.items():
             for order_id, label, status_code in dimension_triples:
                 if label == 1:
                     nodes_to_add.add((order_id, 'order'))
@@ -213,16 +190,18 @@ class GraphGenerator:
         for u, v, relation_type in edges_to_add:
             graph.add_edge(u, v, label=1, relation_type=relation_type)
 
+        self.logger.info(f"已基于数据集构建知识图谱")
         return graph
 
-    def save_graph_as_pt(self, graph, output_dir, dataset_type="train", filename="knowledge_graph.pt"):
+    def save_graph_as_pt(self, graph, train_ratio, val_ratio, filename="knowledge_graph.pt"):
         """
-        将构建的图保存为 PyTorch Geometric 格式，并生成训练/验证/测试掩码
+        将构建的图保存为 PyTorch Geometric 格式，并按时间顺序生成训练/验证/测试掩码
+        非订单节点全部分配给训练集
 
         Args:
             graph: NetworkX图
-            output_dir: 输出目录
-            dataset_type: 数据集类型 ("train", "val", "test")
+            train_ratio: 训练集比例
+            val_ratio: 验证集比例
             filename: 输出文件名
         """
         # 1. 确定性节点排序和映射
@@ -269,11 +248,11 @@ class GraphGenerator:
                     pass
             node_features.append(features)
 
-        # 4. 确定性边处理 - 关键改进部分
+        # 4. 确定性边处理
         src_nodes = []
         dst_nodes = []
         edge_attrs = []
-        edge_types = []  # 新增：收集边类型
+        edge_types = []  # 收集边类型
 
         # 收集所有边并标准化源-目标关系
         edges_data = []
@@ -295,11 +274,10 @@ class GraphGenerator:
             edge_types.append(relation_type)  # 添加边的类型
 
         # 5. 创建确定性张量
-        # 直接创建[2, num_edges]格式的edge_index，避免使用t()
         if src_nodes:
             edge_index = torch.tensor([src_nodes, dst_nodes], dtype=torch.long)
             edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
-            edge_type = torch.tensor(edge_types, dtype=torch.long)  # 将边类型转换为张量
+            edge_type = torch.tensor(edge_types, dtype=torch.long)
         else:
             self.logger.warning(f"图中没有边，跳过保存 {filename}")
             return
@@ -307,20 +285,45 @@ class GraphGenerator:
         node_features = torch.tensor(node_features, dtype=torch.float)
         behavior_labels = torch.tensor(behavior_labels, dtype=torch.long)
 
-        # 6. 掩码生成（按排序后的节点）
+        # 6. 按时间顺序生成掩码 - 关键修改部分
         num_nodes = len(all_nodes)
+        order_indices = []  # 订单节点索引
+        non_order_indices = []  # 非订单节点索引
+
+        # 收集订单节点和非订单节点
+        for i, node_type in enumerate(node_types):
+            if node_type == 'order' and time_attrs[i]:  # 订单节点且有时间属性
+                order_indices.append((i, time_attrs[i]))  # (节点索引, 时间)
+            else:
+                non_order_indices.append(i)  # 非订单节点索引
+
+        # 按时间排序订单节点
+        order_indices.sort(key=lambda x: x[1])  # 按时间属性排序
+        sorted_order_indices = [idx for idx, _ in order_indices]
+
+        # 按时间顺序划分订单节点
+        order_count = len(sorted_order_indices)
+        train_order_size = int(order_count * train_ratio)
+        val_order_size = int(order_count * val_ratio)
+
+        train_order_indices = sorted_order_indices[:train_order_size]  # 时间较早的作为训练集
+        val_order_indices = sorted_order_indices[train_order_size:train_order_size + val_order_size]  # 中间时段作为验证集
+        test_order_indices = sorted_order_indices[train_order_size + val_order_size:]  # 最新数据作为测试集
+
+        # 7. 创建掩码
         train_mask = torch.zeros(num_nodes, dtype=torch.bool)
         val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
-        if dataset_type == "train":
-            train_mask.fill_(True)
-        elif dataset_type == "val":
-            val_mask.fill_(True)
-        else:  # test
-            test_mask.fill_(True)
+        # 设置订单节点掩码
+        train_mask[train_order_indices] = True
+        val_mask[val_order_indices] = True
+        test_mask[test_order_indices] = True
 
-        # 7. 创建PyG数据对象
+        # 将所有非订单节点分配给训练集
+        train_mask[non_order_indices] = True
+
+        # 8. 创建PyG数据对象
         data = Data(
             x=node_features,
             edge_index=edge_index,
@@ -332,25 +335,32 @@ class GraphGenerator:
             test_mask=test_mask
         )
 
-        # 8. 保存元数据
+        # 9. 保存元数据
         time_dict = {i: attr for i, attr in enumerate(time_attrs) if attr}
         process_dict = {i: attr for i, attr in enumerate(process_attrs) if attr}
         data.time_attr = time_dict
         data.process_attr = process_dict
 
-        # 9. 保存为.pt文件
-        os.makedirs(output_dir, exist_ok=True)
-        file_path = os.path.join(output_dir, filename)
+        # 10. 保存为.pt文件
+        os.makedirs(self.output_dir, exist_ok=True)
+        file_path = os.path.join(self.output_dir, filename)
         torch.save(data, file_path)
-        self.logger.info(f"图数据已保存为: {file_path}")
 
-        # 10. 输出验证信息用于调试（可选）
-        self.logger.debug(f"节点数: {num_nodes}, 边数: {len(src_nodes)}")
+        # 11. 输出划分统计信息
+        order_train = sum(1 for i in train_order_indices)
+        order_val = len(val_order_indices)
+        order_test = len(test_order_indices)
+        non_order = len(non_order_indices)
+
+        self.logger.info(f"图谱数据已保存为: {file_path}")
+        self.logger.info(f"数据集划分: 订单节点 - 训练:{order_train}, 验证:{order_val}, 测试:{order_test}")
+        self.logger.info(f"非订单节点(全部分配到训练集): {non_order}")
+        self.logger.debug(f"节点总数: {num_nodes}, 边数: {len(src_nodes)}")
         self.logger.debug(f"edge_index shape: {edge_index.shape}")
-        self.logger.debug(f"edge_type shape: {edge_type.shape}")  # 新增日志输出
+        self.logger.debug(f"edge_type shape: {edge_type.shape}")
 
     @staticmethod
-    def visualize_graph(graph, dataset_name, save=False):
+    def visualize_graph(graph, save=False):
         """可视化知识图谱"""
         # 设置节点颜色和大小
         node_colors = []
@@ -370,69 +380,36 @@ class GraphGenerator:
         nx.draw(graph, pos, with_labels=True, node_color=node_colors, node_size=node_sizes, font_size=10,
                 font_weight='bold', edge_color='gray')
 
-        plt.title(f"Knowledge Graph - {dataset_name}", fontsize=14)
+        plt.title(f"Knowledge Graph", fontsize=14)
         plt.show()
         if save:
-            output_file = os.path.join("../data/processed", f"knowledge_graph_{dataset_name}.png")
+            output_file = os.path.join("../data/processed", f"knowledge_graph.png")
             plt.savefig(output_file)
             print(f"图谱已保存为: {output_file}")
 
-    def process_dataset(self, df, output_dir, dataset_name):
-        """处理单个数据集的所有步骤"""
+    def process_dataset(self, train_ratio, val_ratio):
+        """数据集处理步骤"""
+        self.logger.info(f"{'=' * 20} 处理并划分集数据 {'=' * 20}")
+
         set_seed()
-        # 生成三元组
-        triples = self.generate_triples(df)
-        self.logger.info(f"已生成 {dataset_name} 数据集的三元组")
-
-        # 保存三元组(可选)
-        # self.save_triples_to_dir(triples, output_dir)
-
-        # 构建知识图谱
-        graph = self.build_knowledge_graph(triples, df)
-        self.logger.info(f"已构建 {dataset_name} 数据集的知识图谱")
-
-        # 保存图
-        self.save_graph_as_pt(graph, output_dir, dataset_name)
-
-        # 可视化图谱(可选)
-        # self.visualize_graph(graph, dataset_name)
-
-        return triples
+        self.generate_triples()  # 生成三元组
+        # self.save_triples_to_dir()  # 保存三元组(可选)
+        graph = self.build_knowledge_graph()  # 构建知识图谱
+        self.save_graph_as_pt(graph, train_ratio, val_ratio)  # 保存图谱(划分数据集)
+        # self.visualize_graph(graph)  # 可视化图谱(可选)
 
     def process(self):
-        """执行完整的三元组生成流程"""
+        """数据预处理全流程"""
         try:
+            self.logger.info(f"{'=' * 20} 开始处理数据集 {'=' * 20}")
+
             set_seed()
-            # 1. 加载数据，初始化编码
             self.load_data()  # 加载数据
             self.initialize_encoding()  # 初始化编码
             self.save_encoding_info()  # 保存编码信息
+            self.process_dataset(train_ratio=0.7, val_ratio=0.15)  # 处理数据集
 
-            # 2. 划分数据集
-            train_df, val_df, test_df = self.split_data()
-
-            # 3. 为每个数据集创建目录
-            train_dir = os.path.join(self.output_dir, "train")
-            val_dir = os.path.join(self.output_dir, "val")
-            test_dir = os.path.join(self.output_dir, "test")
-
-            for directory in [train_dir, val_dir, test_dir]:
-                if not os.path.exists(directory):
-                    os.makedirs(directory)
-                    self.logger.info(f"创建数据集目录: {directory}")
-
-            # 4. 处理训练集
-            self.logger.info(f"{'-' * 20}处理训练集数据{'-' * 20}")
-            self.process_dataset(train_df, train_dir, "train")
-
-            # 5. 处理验证集
-            self.logger.info(f"{'-' * 20}处理验证集数据{'-' * 20}")
-            self.process_dataset(val_df, val_dir, "val")
-
-            # 6. 处理测试集
-            self.logger.info(f"{'-' * 20}处理测试集数据{'-' * 20}")
-            self.process_dataset(test_df, test_dir, "test")
-
+            self.logger.info(f"{'=' * 20} 数据集处理完成 {'=' * 20}")
             return True
         except Exception as e:
             self.logger.error(f"处理过程中出错: {e}")

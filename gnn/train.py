@@ -20,14 +20,14 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 logger.info(f"current training device: {device}")
 
 
-def load_data(split):
+def load_data():
     """加载指定分割的数据"""
     try:
-        path = f"../data/processed/{split}/knowledge_graph.pt"
-        logger.info(f"正在从 {path} 加载 {split} 数据")
+        path = f"../data/processed/knowledge_graph.pt"
+        logger.info(f"正在从 {path} 加载数据")
         return torch.load(path, weights_only=False)
     except Exception as e:
-        logger.error(f"加载 {split} 数据时出错: {e}")
+        logger.error(f"加载数据时出错: {e}")
         raise
 
 
@@ -37,7 +37,7 @@ def preprocess_data(data):
 
     # 只检查标签范围，但不修改无效标签
     valid_mask = (data.y >= 0) & (data.y < 6)
-    invalid_count = (~valid_mask).sum().item()
+    invalid_count = torch.logical_not(valid_mask).sum().item()
 
     if invalid_count > 0:
         logger.info(f"发现 {invalid_count} 个非预测节点（标签超出0-5范围）")
@@ -124,51 +124,25 @@ def train():
     start_time = time.time()
 
     epoch_num = 1500
-    train_data = preprocess_data(load_data("train"))
-    val_data = preprocess_data(load_data("val"))
+    data = preprocess_data(load_data())
 
-    # ===== 关键修改: 将验证数据映射到与训练数据相同的节点空间 =====
-    if train_data.num_nodes != val_data.num_nodes:
-        logger.warning(f"训练节点数({train_data.num_nodes})与验证节点数({val_data.num_nodes})不匹配，进行调整...")
-
-        # 创建新的验证掩码(全False，长度与训练节点数一致)
-        new_val_mask = torch.zeros(train_data.num_nodes, dtype=torch.bool, device=device)
-        # 如果验证集节点少于训练集，使用前n个
-        if val_data.num_nodes <= train_data.num_nodes:
-            # 将原始验证掩码中的True值保留
-            valid_indices = torch.where(val_data.val_mask)[0]
-            new_val_mask[valid_indices] = True
-        # 如果验证集节点多于训练集(不太可能)，仅保留训练集大小
-        else:
-            # 取前train_data.num_nodes个节点的掩码
-            new_val_mask[:] = val_data.val_mask[:train_data.num_nodes]
-
-        # 替换验证数据为训练数据，但使用验证掩码
-        val_data = train_data.clone()
-        val_data.val_mask = new_val_mask
-        val_data.train_mask.fill_(False)  # 确保训练掩码为False
-
-    # 确定关系数量
-
-    # model = GCN(train_data.num_features, 128, 6).to(device)
-    model = RGCN(train_data.num_features, hidden_dim=128, output_dim=6).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=1e-4)  # 超参数 [lr: 0.001-0.005]
+    model = RGCN(data.num_features, hidden_dim=128, output_dim=6).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, weight_decay=1e-4)  # 超参数 [lr: 0.001-0.005]
 
     # 学习率调度器
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=0.02,  # 超参数 [max_lr: 0.005-0.01]
+        max_lr=0.01,  # 超参数 [max_lr: 0.005-0.01]
         total_steps=epoch_num,
-        pct_start=0.1,  # 预热时间 [pct_start: 0.1-0.3]
+        pct_start=0.2,  # 预热时间 [pct_start: 0.1-0.3]
         anneal_strategy='cos',
-        div_factor=10,
+        div_factor=20,
         final_div_factor=100
     )
 
-    # 计算类别权重 - 改进版
     # 计算类别数量
     class_counts = torch.zeros(6)
-    for label in train_data.y[train_data.train_mask]:
+    for label in data.y[data.train_mask]:
         if 0 <= label < 6:
             class_counts[label.item()] += 1
 
@@ -201,9 +175,9 @@ def train():
     epochs = []
 
     # 设置混合损失参数
-    focal_gamma = 2.5  # 超参数 [focal_gamma: 1.0-2.5]
+    focal_gamma = 3.0 # 超参数 [focal_gamma: 1.0-2.5]
     label_smoothing = 0.2  # 超参数 [label_smoothing: 0.05-0.2]
-    loss_balance = 0.5  # 超参数 [loss_balance: 0.7-0.9]
+    loss_balance = 0.7  # 超参数 [loss_balance: 0.7-0.9]
 
 
     for epoch in range(epoch_num):
@@ -214,12 +188,12 @@ def train():
         current_gamma = max(1.0, focal_gamma * (1 - epoch / epoch_num))
 
         # out = model(train_data.x, train_data.edge_index)
-        out = model(train_data.x, train_data.edge_index, train_data.edge_type)
+        out = model(data.x, data.edge_index, data.edge_type)
 
         # 使用混合损失函数
         loss = hybrid_loss(
-            out[train_data.train_mask],
-            train_data.y[train_data.train_mask],
+            out[data.train_mask],
+            data.y[data.train_mask],
             class_weights=class_weights,
             gamma=current_gamma,
             label_smoothing=label_smoothing,
@@ -229,20 +203,19 @@ def train():
         loss.backward()
 
         # 梯度裁剪避免爆炸
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.75)  # 超参数 [max_norm: 0.5-2.0]
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.5)  # 超参数 [max_norm: 0.5-2.0]
 
         optimizer.step()
 
         # 评估验证集性能
         model.eval()
         with torch.no_grad():
-            # out = model(val_data.x, val_data.edge_index)
-            out = model(train_data.x, train_data.edge_index, train_data.edge_type)
+            out = model(data.x, data.edge_index, data.edge_type)
 
             # 计算验证损失
             val_loss = hybrid_loss(
-                out[val_data.val_mask],
-                val_data.y[val_data.val_mask],
+                out[data.val_mask],
+                data.y[data.val_mask],
                 class_weights=class_weights,
                 gamma=current_gamma,
                 label_smoothing=label_smoothing,
@@ -251,8 +224,8 @@ def train():
 
             # 获取预测标签和真实标签
             pred = out.argmax(dim=1)
-            y_pred = pred[val_data.val_mask].cpu().numpy()
-            y_true = val_data.y[val_data.val_mask].cpu().numpy()
+            y_pred = pred[data.val_mask].cpu().numpy()
+            y_true = data.y[data.val_mask].cpu().numpy()
 
             # 计算验证指标
             correct = (y_pred == y_true).sum()
@@ -396,63 +369,9 @@ def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
     plt.close('all')
 
 
-def evaluate(model, split, train_data=None):
-    """
-    在验证集或测试集上评估模型，计算多种性能指标
-
-    Args:
-        model: 要评估的模型
-        split: 数据集分割("val"或"test")
-        train_data: 训练数据，用于维度对齐(可选)
-    """
-    data = preprocess_data(load_data(split))
-
-    # ===== 打印诊断信息 =====
-    if train_data is not None:
-        logger.debug(f"训练数据: 节点数={train_data.num_nodes}, 特征维度={train_data.num_features}")
-        logger.debug(f"{split}数据: 节点数={data.num_nodes}, 特征维度={data.num_features}")
-
-    # ===== 关键修改: 将评估数据映射到与训练数据相同的节点空间 =====
-    if train_data is not None and train_data.num_nodes != data.num_nodes:
-        logger.warning(f"训练节点数({train_data.num_nodes})与{split}节点数({data.num_nodes})不匹配，进行调整...")
-
-        # 确定要使用的掩码
-        if split == "val":
-            eval_mask = data.val_mask
-        elif split == "test":
-            eval_mask = data.test_mask
-        else:
-            raise ValueError(f"不支持的数据集类型: {split}")
-
-        # 创建新的评估掩码(全False，长度与训练节点数一致)
-        new_eval_mask = torch.zeros(train_data.num_nodes, dtype=torch.bool, device=device)
-
-        # 如果评估集节点少于训练集，使用有效的索引
-        if data.num_nodes <= train_data.num_nodes:
-            # 将原始评估掩码中的True值映射到新掩码
-            valid_indices = torch.where(eval_mask)[0]
-            if len(valid_indices) > 0:
-                new_eval_mask[valid_indices] = True
-        # 如果评估集节点多于训练集(不太可能)，仅保留训练集大小
-        else:
-            # 取前train_data.num_nodes个节点的掩码
-            new_eval_mask[:] = eval_mask[:train_data.num_nodes]
-
-        # 使用训练数据作为基础，但替换为评估掩码
-        aligned_data = train_data.clone()
-        if split == "val":
-            aligned_data.val_mask = new_eval_mask
-            aligned_data.train_mask.fill_(False)  # 确保训练掩码为False
-            aligned_data.test_mask.fill_(False)  # 确保测试掩码为False
-        else:  # test
-            aligned_data.test_mask = new_eval_mask
-            aligned_data.train_mask.fill_(False)  # 确保训练掩码为False
-            aligned_data.val_mask.fill_(False)  # 确保验证掩码为False
-
-        # 使用对齐后的数据
-        data = aligned_data
-        logger.info(f"成功将{split}数据对齐到训练数据维度")
-
+def evaluate(model, split):
+    """在验证集或测试集上评估模型，计算多种性能指标"""
+    data = preprocess_data(load_data())
     model.eval()
     results = {}
 
@@ -468,12 +387,7 @@ def evaluate(model, split, train_data=None):
         else:
             raise ValueError(f"不支持的数据集类型: {split}")
 
-        # 检查掩码维度与模型输出是否匹配
-        if len(mask) != len(out):
-            logger.error(f"掩码维度({len(mask)})与模型输出维度({len(out)})不匹配!")
-            raise ValueError("掩码维度与模型输出不匹配")
-
-        # 获取预测结果和真实标签（使用CPU以便用于sklearn）
+        # 获取预测结果和真实标签
         mask_indices = torch.where(mask)[0]
         if len(mask_indices) == 0:
             logger.warning(f"在{split}集中没有标记为True的样本!")
@@ -487,16 +401,12 @@ def evaluate(model, split, train_data=None):
         y_pred = pred[mask].cpu().numpy()
         y_true = data.y[mask].cpu().numpy()
 
-        # 计算准确率
+        # 计算评估指标
         correct = (y_pred == y_true).sum()
         results['accuracy'] = correct / len(y_true)
-
-        # 计算精确率、召回率、F1分数（使用宏平均以适应多分类）
         results['precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
         results['recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
         results['f1'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
-
-        # 计算混淆矩阵
         results['confusion_matrix'] = confusion_matrix(y_true, y_pred)
 
     return results
@@ -504,16 +414,19 @@ def evaluate(model, split, train_data=None):
 
 def test():
     """测试模型"""
-    # 加载训练数据用于对齐
-    train_data = preprocess_data(load_data("train"))
+    # 加载测试数据
+    data = preprocess_data(load_data())
 
-    # 加载模型
-    model = RGCN(train_data.num_features, hidden_dim=128, output_dim=6).to(device)
+    # 初始化模型，确保与训练时使用相同的参数
+    model = RGCN(data.num_features, hidden_dim=128, output_dim=6).to(device)
+
+    # 加载最佳模型权重
     model.load_state_dict(
-        torch.load(os.path.join(output_dir, "model/best_model.pth"), map_location=device, weights_only=True))
+        torch.load(os.path.join(output_dir, "model/best_model.pth"),
+                   map_location=device, weights_only=True))
 
-    # 传入训练数据进行对齐评估
-    test_results = evaluate(model, "test", train_data)
+    # 直接评估，不需要传入训练数据
+    test_results = evaluate(model, "test")
 
     # 输出测试结果
     logger.info(f"{'=' * 15} 测试集评估结果 {'=' * 15}")

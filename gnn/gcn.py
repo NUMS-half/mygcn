@@ -151,17 +151,17 @@ class RGCN(torch.nn.Module):
         super(RGCN, self).__init__()
         # num_relations：表示图中不同关系的数量
 
-        # 第一层R-GCN
+        # 第一层 R-GCN
         self.conv1 = RGCNConv(
             in_channels=input_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
-            # R-GCN没有improved参数，但默认会添加自环
+            # R-GCN 会默认添加自环
             aggr='add'  # 聚合方法：mean, add, max
         )
         self.ln1 = LayerNorm(hidden_dim)
 
-        # 第二层R-GCN
+        # 第二层 R-GCN
         self.conv2 = RGCNConv(
             in_channels=hidden_dim,
             out_channels=hidden_dim,
@@ -170,18 +170,19 @@ class RGCN(torch.nn.Module):
         )
         self.ln2 = LayerNorm(hidden_dim)
 
-        # 分类头保持不变
+        # 分类头：三层 MLP
         self.classifier = nn.Sequential(
-            # 更宽的中间层
-            nn.Linear(hidden_dim, hidden_dim),  # 不立即减半
+            # 第一层（保持维度）
+            nn.Linear(hidden_dim, hidden_dim),  # 先保持原维度不变
             nn.LayerNorm(hidden_dim),
-            nn.GELU(),
+            nn.GELU(),  # 使用高斯误差线性单元激活函数，比ReLU更平滑
             nn.Dropout(dropout),
-            # 更深的架构
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            # 第二层（降维处理）
+            nn.Linear(hidden_dim, hidden_dim // 2),  # 将特征维度减半
             nn.LayerNorm(hidden_dim // 2),
             nn.GELU(),
-            nn.Dropout(dropout * 0.8),  # 逐层递减的dropout
+            nn.Dropout(dropout * 0.8),  # 逐层递减的 dropout 率
+            # 输出层（进行分类）
             nn.Linear(hidden_dim // 2, output_dim)
         )
 
@@ -192,8 +193,8 @@ class RGCN(torch.nn.Module):
         # 在训练时对边进行 dropout
         if self.training:
             # R-GCN 需要同时对 edge_index 和 edge_type 进行 dropout
-            perm = torch.randperm(edge_index.size(1))
-            keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))]
+            perm = torch.randperm(edge_index.size(1)) # 打乱边索引排列
+            keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))] # 打乱后，从前向后保留指定比例的边
             edge_index = edge_index[:, keep_mask]
             edge_type = edge_type[keep_mask]
 
@@ -207,10 +208,10 @@ class RGCN(torch.nn.Module):
         x = self.conv2(x1, edge_index, edge_type)
         x = self.ln2(x)
         x = F.relu(x)
-        x = x + x1 * 0.2  # 轻量级残差连接，保持特征流动性
+        x = x + x1 * 0.5  # 轻度残差连接，保持特征流动性
         x = F.dropout(x, p=self.dropout, training=self.training)
 
-        # 分类
+        # 分类头进行分类
         x = self.classifier(x)
 
         return F.log_softmax(x, dim=1)
