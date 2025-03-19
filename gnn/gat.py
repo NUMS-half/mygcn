@@ -74,7 +74,7 @@ class BalancedGAT(torch.nn.Module):
         self.dropout = dropout
         self.edge_dropout = edge_dropout
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, edge_type=None):
         # 边dropout
         edge_index, _ = dropout_edge(edge_index, p=self.edge_dropout, training=self.training)
 

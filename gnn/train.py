@@ -2,7 +2,7 @@ import os
 import time
 import torch
 import numpy as np
-from gnn.gcn import GCN, RGCN
+from gnn.gcn import RGCN
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from utils.helper import set_seed, get_logger
@@ -475,7 +475,7 @@ def test():
 #
 #         # 计算统计数据
 #         if all_results:
-#             logger.info(f"\n{'=' * 20} {round} 轮训练统计结果 {'=' * 20}")
+#             logger.info(f"\n{'=' * 20} {rounds} 轮训练统计结果 {'=' * 20}")
 #
 #             # 提取各项指标
 #             accuracies = [r['accuracy'] for r in all_results]

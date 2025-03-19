@@ -3,7 +3,6 @@ import torch.nn as nn
 from torch.nn import LayerNorm
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, RGCNConv
-from torch_geometric.utils import dropout_edge
 
 
 # 1. Base GCNConv - 2 layers
@@ -106,44 +105,44 @@ from torch_geometric.utils import dropout_edge
 #         x = self.ln_out(x)
 #
 #         return F.log_softmax(x, dim=1)
-
-class GCN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3, edge_dropout=0.1):
-        super(GCN, self).__init__()
-        # 保持原始结构但增强处理能力
-        self.conv1 = GCNConv(input_dim, hidden_dim, improved=True, add_self_loops=True)
-        self.ln1 = LayerNorm(hidden_dim)
-
-        # 简单而有效的第二层
-        self.conv2 = GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
-        self.ln2 = LayerNorm(hidden_dim)
-
-        self.classifier = nn.Linear(hidden_dim, output_dim)
-
-        self.dropout = dropout
-        self.edge_dropout = edge_dropout
-
-    def forward(self, x, edge_index):
-        # 对边进行 dropout (仅在训练时)
-        edge_index, _ = dropout_edge(edge_index, p=self.edge_dropout, training=self.training)
-
-        # 第一层特征提取
-        x = self.conv1(x, edge_index)
-        x = self.ln1(x)
-        x = F.relu(x)
-        x1 = F.dropout(x, p=self.dropout, training=self.training)
-
-        # 第二层特征提取
-        x = self.conv2(x1, edge_index)
-        x = self.ln2(x)
-        x = F.relu(x)
-        x = x + x1 * 0.2  # 轻量级残差连接，保持特征流动性
-        x = F.dropout(x, p=self.dropout, training=self.training)
-
-        # 分类
-        x = self.classifier(x)
-
-        return F.log_softmax(x, dim=1)
+#
+# class GCN(torch.nn.Module):
+#     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3, edge_dropout=0.1):
+#         super(GCN, self).__init__()
+#         # 保持原始结构但增强处理能力
+#         self.conv1 = GCNConv(input_dim, hidden_dim, improved=True, add_self_loops=True)
+#         self.ln1 = LayerNorm(hidden_dim)
+#
+#         # 简单而有效的第二层
+#         self.conv2 = GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+#         self.ln2 = LayerNorm(hidden_dim)
+#
+#         self.classifier = nn.Linear(hidden_dim, output_dim)
+#
+#         self.dropout = dropout
+#         self.edge_dropout = edge_dropout
+#
+#     def forward(self, x, edge_index):
+#         # 对边进行 dropout (仅在训练时)
+#         edge_index, _ = dropout_edge(edge_index, p=self.edge_dropout, training=self.training)
+#
+#         # 第一层特征提取
+#         x = self.conv1(x, edge_index)
+#         x = self.ln1(x)
+#         x = F.relu(x)
+#         x1 = F.dropout(x, p=self.dropout, training=self.training)
+#
+#         # 第二层特征提取
+#         x = self.conv2(x1, edge_index)
+#         x = self.ln2(x)
+#         x = F.relu(x)
+#         x = x + x1 * 0.2  # 轻量级残差连接，保持特征流动性
+#         x = F.dropout(x, p=self.dropout, training=self.training)
+#
+#         # 分类
+#         x = self.classifier(x)
+#
+#         return F.log_softmax(x, dim=1)
 
 
 class RGCN(torch.nn.Module):
@@ -166,7 +165,7 @@ class RGCN(torch.nn.Module):
             in_channels=hidden_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
-            aggr='mean'
+            aggr='max'
         )
         self.ln2 = LayerNorm(hidden_dim)
 
@@ -208,7 +207,7 @@ class RGCN(torch.nn.Module):
         x = self.conv2(x1, edge_index, edge_type)
         x = self.ln2(x)
         x = F.relu(x)
-        x = x + x1 * 0.5  # 轻度残差连接，保持特征流动性
+        x = x + x1 * 0.2  # 轻度残差连接，保持特征流动性
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # 分类头进行分类
