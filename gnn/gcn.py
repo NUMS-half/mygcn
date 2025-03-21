@@ -156,7 +156,7 @@ class RGCN(torch.nn.Module):
             out_channels=hidden_dim,
             num_relations=num_relations,
             # R-GCN 会默认添加自环
-            aggr='add'  # 聚合方法：mean, add, max
+            aggr='mean'  # 聚合方法：mean, add, max，目前性能好的组合：mean + add / add + max
         )
         self.ln1 = LayerNorm(hidden_dim)
 
@@ -165,7 +165,7 @@ class RGCN(torch.nn.Module):
             in_channels=hidden_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
-            aggr='max'
+            aggr='add'
         )
         self.ln2 = LayerNorm(hidden_dim)
 
@@ -215,120 +215,187 @@ class RGCN(torch.nn.Module):
 
         return F.log_softmax(x, dim=1)
 
+    def get_node_reps(self, x, edge_index, edge_type, batch=None):
+        """
+        获取节点的表示向量，用于计算Lp和Ln损失
+        返回最终的节点特征表示（在分类前）
+
+        参数:
+            x: 节点特征
+            edge_index: 边索引
+            edge_type: 边类型
+            batch: 批处理索引（对于图级任务）
+
+        返回:
+            节点表示向量
+        """
+        # 保持与forward相同的边dropout逻辑
+        if self.training:
+            perm = torch.randperm(edge_index.size(1))
+            keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))]
+            edge_index = edge_index[:, keep_mask]
+            edge_type = edge_type[keep_mask]
+
+        # 第一层特征提取
+        x = self.conv1(x, edge_index, edge_type)
+        x = self.ln1(x)
+        x = F.relu(x)
+        x1 = F.dropout(x, p=self.dropout, training=self.training)
+
+        # 第二层特征提取
+        x = self.conv2(x1, edge_index, edge_type)
+        x = self.ln2(x)
+        x = F.relu(x)
+        x = x + x1 * 0.2  # 轻度残差连接
+        x = F.dropout(x, p=self.dropout, training=self.training)
+
+        # 返回最终的节点表示（在分类器之前）
+        return x
+
 # class RGCN(torch.nn.Module):
-#     def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, dropout=0.3, edge_dropout=0.1):
+#     def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, dropout=0.3, edge_dropout=0.1, att_heads=8):
 #         super(RGCN, self).__init__()
+#         # num_relations：表示图中不同关系的数量
 #
-#         # 特征转换层
-#         self.feature_encoder = nn.Sequential(
-#             nn.Linear(input_dim, hidden_dim),
-#             nn.LayerNorm(hidden_dim),
-#             nn.GELU(),
-#             nn.Dropout(dropout * 0.8)
+#         # 第一层 R-GCN
+#         self.conv1 = RGCNConv(
+#             in_channels=input_dim,
+#             out_channels=hidden_dim,
+#             num_relations=num_relations,
+#             # R-GCN 会默认添加自环
+#             aggr='mean'  # 聚合方法：mean, add, max
 #         )
-#
-#         # RGCN卷积层 - 使用不同的聚合方式
-#         self.conv1 = RGCNConv(hidden_dim, hidden_dim, num_relations, aggr='add')
 #         self.ln1 = LayerNorm(hidden_dim)
 #
-#         self.conv2 = RGCNConv(hidden_dim, hidden_dim, num_relations, aggr='mean')
+#         # 第二层 R-GCN
+#         self.conv2 = RGCNConv(
+#             in_channels=hidden_dim,
+#             out_channels=hidden_dim,
+#             num_relations=num_relations,
+#             aggr='add'
+#         )
 #         self.ln2 = LayerNorm(hidden_dim)
 #
-#         self.conv3 = RGCNConv(hidden_dim, hidden_dim, num_relations, aggr='max')
-#         self.ln3 = LayerNorm(hidden_dim)
+#         # 新增：类别感知注意力层
+#         self.class_attention = nn.Sequential(
+#             nn.Linear(hidden_dim, output_dim),
+#             nn.Sigmoid()
+#         )
 #
-#         # 多头注意力层
+#         # 新增：图注意力机制 - 让节点关注重要邻居
 #         self.attention = GATConv(
 #             hidden_dim,
-#             hidden_dim // 4,
-#             heads=4,
-#             dropout=dropout
-#         )
-#         self.ln_att = LayerNorm(hidden_dim)
-#
-#         # 特征融合层
-#         self.fusion = nn.Sequential(
-#             nn.Linear(hidden_dim * 3, hidden_dim),
-#             nn.LayerNorm(hidden_dim),
-#             nn.GELU(),
-#             nn.Dropout(dropout * 0.7)
+#             hidden_dim // att_heads,
+#             heads=att_heads,
+#             dropout=dropout * 0.5,
+#             concat=True
 #         )
 #
-#         # 分类器
+#         # 新增：注意力权重 - 初始化为均匀权重
+#         self.class_weights = nn.Parameter(torch.ones(output_dim) / output_dim)
+#
+#         # 分类头：三层 MLP
 #         self.classifier = nn.Sequential(
-#             nn.Linear(hidden_dim * 2, hidden_dim),
+#             # 第一层（保持维度）
+#             nn.Linear(hidden_dim * 2, hidden_dim),  # 增加了输入维度，包含注意力特征
 #             nn.LayerNorm(hidden_dim),
-#             nn.GELU(),
-#             nn.Dropout(dropout * 0.8),
-#             nn.Linear(hidden_dim, hidden_dim // 2),
+#             nn.GELU(),  # 使用高斯误差线性单元激活函数，比ReLU更平滑
+#             nn.Dropout(dropout),
+#             # 第二层（降维处理）
+#             nn.Linear(hidden_dim, hidden_dim // 2),  # 将特征维度减半
 #             nn.LayerNorm(hidden_dim // 2),
 #             nn.GELU(),
-#             nn.Dropout(dropout * 0.6),
+#             nn.Dropout(dropout * 0.8),  # 逐层递减的 dropout 率
+#             # 输出层（进行分类）
 #             nn.Linear(hidden_dim // 2, output_dim)
 #         )
 #
-#         # 模型参数
 #         self.dropout = dropout
 #         self.edge_dropout = edge_dropout
-#         self.num_relations = num_relations
+#         self.output_dim = output_dim
 #
-#     def _preprocess_edges(self, edge_index, edge_type):
-#         """边预处理函数：应用边dropout"""
-#         if self.training and self.edge_dropout > 0:
-#             mask = torch.rand(edge_index.size(1), device=edge_index.device) > self.edge_dropout
-#             edge_index = edge_index[:, mask]
-#             edge_type = edge_type[mask]
-#         return edge_index, edge_type
+#     def update_class_weights(self, class_error_rates):
+#         """
+#         更新类别权重，给误差率高的类别更多关注
 #
-#     def _extract_features(self, x, edge_index, edge_type):
-#         """特征提取核心功能：返回多个层次的特征"""
-#         # 初始特征转换
-#         x_0 = self.feature_encoder(x)
+#         参数:
+#             class_error_rates: 各类别的错误率 [output_dim]
+#         """
+#         # 归一化错误率并设置为权重
+#         if not isinstance(class_error_rates, torch.Tensor):
+#             class_error_rates = torch.tensor(class_error_rates, device=self.class_weights.device)
 #
-#         # 多层次特征抽取
-#         x_1 = F.relu(self.ln1(self.conv1(x_0, edge_index, edge_type)))
-#         x_1 = F.dropout(x_1, p=self.dropout, training=self.training)
+#         # 确保错误率非零（避免数值问题）
+#         class_error_rates = torch.clamp(class_error_rates, min=0.01)
 #
-#         x_2 = F.relu(self.ln2(self.conv2(x_1, edge_index, edge_type)))
-#         x_2 = F.dropout(x_2, p=self.dropout, training=self.training)
-#
-#         # 带有残差连接的第三层
-#         x_3 = F.relu(self.ln3(self.conv3(x_2, edge_index, edge_type)))
-#         x_3 = x_3 + x_1 * 0.2 + x_2 * 0.3  # 多层残差连接
-#         x_3 = F.dropout(x_3, p=self.dropout, training=self.training)
-#
-#         # 注意力层增强特征学习
-#         x_att = self.attention(x_3, edge_index)
-#         x_att = self.ln_att(x_att)
-#         x_att = F.dropout(x_att, p=self.dropout, training=self.training)
-#
-#         # 多层特征融合
-#         multi_scale = torch.cat([x_1, x_2, x_3], dim=-1)
-#         fused_features = self.fusion(multi_scale)
-#
-#         return fused_features, x_att
+#         # 更新类别权重 - 错误率越高权重越大
+#         with torch.no_grad():
+#             self.class_weights.copy_(
+#                 F.softmax(class_error_rates, dim=0)
+#             )
 #
 #     def forward(self, x, edge_index, edge_type):
-#         # 边缘预处理
-#         edge_index, edge_type = self._preprocess_edges(edge_index, edge_type)
+#         # 在训练时对边进行 dropout
+#         if self.training:
+#             perm = torch.randperm(edge_index.size(1))
+#             keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))]
+#             edge_index = edge_index[:, keep_mask]
+#             edge_type = edge_type[keep_mask]
 #
-#         # 提取特征
-#         fused_features, x_att = self._extract_features(x, edge_index, edge_type)
+#         # 第一层特征提取 - 使用边类型信息
+#         x = self.conv1(x, edge_index, edge_type)
+#         x = self.ln1(x)
+#         x = F.relu(x)
+#         x1 = F.dropout(x, p=self.dropout, training=self.training)
 #
-#         # 结合注意力特征和融合特征
-#         final_features = torch.cat([fused_features, x_att], dim=-1)
+#         # 第二层特征提取 - 使用边类型信息
+#         x = self.conv2(x1, edge_index, edge_type)
+#         x = self.ln2(x)
+#         x = F.relu(x)
+#         x = x + x1 * 0.2  # 轻度残差连接，保持特征流动性
+#         x_gnn = F.dropout(x, p=self.dropout, training=self.training)
 #
-#         # 分类
-#         logits = self.classifier(final_features)
+#         # 新增：类别感知注意力
+#         class_attn = self.class_attention(x_gnn)
+#         # 应用类别权重 - 让模型关注效果不好的类别
+#         weighted_attn = class_attn * self.class_weights.view(1, -1)
+#         attn_scores = weighted_attn.sum(dim=1, keepdim=True)
 #
-#         return F.log_softmax(logits, dim=1)
+#         # 新增：图注意力增强
+#         x_att = self.attention(x_gnn, edge_index)
+#
+#         # 特征增强：结合GNN特征和注意力特征
+#         enhanced_features = torch.cat([x_gnn, x_att * attn_scores], dim=-1)
+#
+#         # 分类头进行分类
+#         x = self.classifier(enhanced_features)
+#
+#         return F.log_softmax(x, dim=1)
 #
 #     def get_node_reps(self, x, edge_index, edge_type, batch=None):
-#         """获取节点的表示向量，用于计算Lp和Ln损失"""
-#         # 边缘预处理
-#         edge_index, edge_type = self._preprocess_edges(edge_index, edge_type)
+#         """
+#         获取节点的表示向量，用于计算Lp和Ln损失
+#         返回最终的节点特征表示（在分类前）
+#         """
+#         # 保持与forward相同的边dropout逻辑
+#         if self.training:
+#             perm = torch.randperm(edge_index.size(1))
+#             keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))]
+#             edge_index = edge_index[:, keep_mask]
+#             edge_type = edge_type[keep_mask]
 #
-#         # 提取特征并返回融合特征
-#         fused_features, _ = self._extract_features(x, edge_index, edge_type)
+#         # 第一层特征提取
+#         x = self.conv1(x, edge_index, edge_type)
+#         x = self.ln1(x)
+#         x = F.relu(x)
+#         x1 = F.dropout(x, p=self.dropout, training=self.training)
 #
-#         return fused_features
+#         # 第二层特征提取
+#         x = self.conv2(x1, edge_index, edge_type)
+#         x = self.ln2(x)
+#         x = F.relu(x)
+#         x = x + x1 * 0.2  # 轻度残差连接
+#         x = F.dropout(x, p=self.dropout, training=self.training)
+#
+#         # 返回最终的节点表示（在分类器之前）
+#         return x

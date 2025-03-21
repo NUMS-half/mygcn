@@ -366,6 +366,23 @@ def train():
 
         optimizer.step()
 
+        # # （attention）计算各类别错误率并更新权重
+        # if epoch % 5 == 0:  # 每5个epoch更新一次
+        #     with torch.no_grad():
+        #         pred = out.argmax(dim=1)
+        #         error_rates = []
+        #
+        #         for c in range(model.output_dim):
+        #             mask = (data.y == c) & data.val_mask
+        #             if mask.sum() > 0:
+        #                 error_rate = 1.0 - (pred[mask] == c).float().mean()
+        #                 error_rates.append(error_rate.item())
+        #             else:
+        #                 error_rates.append(0.5)  # 默认值
+        #
+        #         # 更新类别权重
+        #         model.update_class_weights(error_rates)
+
         # 评估验证集性能
         model.eval()
         with torch.no_grad():
@@ -387,7 +404,7 @@ def train():
             y_true = data.y[data.val_mask].cpu().numpy()
 
             # 计算验证指标
-            correct = (y_pred == y_true).sum()
+            correct = np.sum(y_pred == y_true)
             val_acc = correct / len(y_true)
             val_precision = precision_score(y_true, y_pred, average='macro', zero_division=0)
             val_recall = recall_score(y_true, y_pred, average='macro', zero_division=0)
@@ -580,7 +597,7 @@ def evaluate(model, split, data=None, config=None):
         y_true = data.y[mask].cpu().numpy()
 
         # 计算评估指标
-        correct = (y_pred == y_true).sum()
+        correct = np.sum(y_pred == y_true)
         results['accuracy'] = correct / len(y_true)
         results['precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
         results['recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
