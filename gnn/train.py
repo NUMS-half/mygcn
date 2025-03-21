@@ -2,32 +2,40 @@ import os
 import time
 import torch
 import numpy as np
-from gnn.gcn import RGCN
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from utils.helper import set_seed, get_logger
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+from utils.helper import load_config, get_model, get_optimizer, get_scheduler, set_seed, get_logger
 
 # 设置日志记录器
 logger = get_logger("Train")
 
+# 创建输出目录
 output_dir = "../output"
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
     logger.info(f"已创建输出目录: {output_dir}")
 
+# 检测设备
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 logger.info(f"current training device: {device}")
 
-
+# 全局变量，缓存图谱数据
+_cached_data = None
 def load_data():
-    """加载指定分割的数据"""
+    """加载图谱数据（懒加载）"""
+    global _cached_data
+
+    # 若数据已缓存，则直接返回
+    if _cached_data is not None:
+        return _cached_data
     try:
         path = f"../data/processed/knowledge_graph.pt"
-        logger.info(f"正在从 {path} 加载数据")
-        return torch.load(path, weights_only=False)
+        logger.info(f"正在从 {path} 加载图谱数据")
+        _cached_data = torch.load(path, weights_only=False)
+        return _cached_data
     except Exception as e:
-        logger.error(f"加载数据时出错: {e}")
+        logger.error(f"加载图谱数据时出错: {e}")
         raise
 
 
@@ -92,6 +100,124 @@ def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1
     return combined_loss.mean()
 
 
+def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_threshold=0.7, max_pairs=100):
+    """
+    优化版本的强调损失(Lp)和忽略损失(Ln)计算
+
+    参数:
+        model: GNN模型
+        data: 图数据
+        out: 模型输出
+        similarity_threshold: 相似度阈值，默认0.7
+        max_pairs: 每个类别最大考虑的节点对数量，防止过度计算
+    """
+    # 1. 只提取一次节点表示并归一化
+    Hi = model.get_node_reps(data.x, data.edge_index, data.edge_type,
+                             data.batch if hasattr(data, 'batch') else None)
+
+    # 2. 只处理训练集节点
+    mask = data.train_mask
+    Hi_train = Hi[mask]
+    labels = data.y[mask]
+    predicted_labels = out[mask].argmax(dim=1)
+
+    # 3. 提前归一化所有特征向量（只计算一次）
+    Hi_norm = F.normalize(Hi_train, p=2, dim=1)
+
+    # 4. 计算预测正确的样本
+    is_correct = predicted_labels == labels
+
+    # 获取类别数
+    num_classes = out.size(1)
+
+    # 初始化损失值和计数器
+    Lp_losses = []
+    Ln_losses = []
+
+    # 对每个类别计算损失
+    for c in range(num_classes):
+        # 获取类别c的正确预测样本
+        c_correct_mask = (labels == c) & is_correct
+        if c_correct_mask.sum() == 0:
+            continue  # 跳过没有正确预测的类别
+
+        c_correct_indices = torch.where(c_correct_mask)[0]
+        c_correct_features = Hi_norm[c_correct_indices]
+
+        # === 强调损失(Lp) - 减少与非c类错误分类的相似性 ===
+        non_c_incorrect_mask = (labels != c) & (~is_correct)
+        if non_c_incorrect_mask.sum() > 0:
+            non_c_incorrect_indices = torch.where(non_c_incorrect_mask)[0]
+            non_c_incorrect_features = Hi_norm[non_c_incorrect_indices]
+
+            # 批量计算相似度矩阵
+            sim_matrix = torch.mm(c_correct_features, non_c_incorrect_features.t())
+
+            # 找出高相似度对，但限制数量以提高效率
+            high_sim_mask = sim_matrix > similarity_threshold
+
+            if high_sim_mask.sum() > 0:
+                # 为每个正确分类的c类样本找高相似度的非c类错误样本
+                for i in range(len(c_correct_indices)):
+                    high_sim_indices = torch.where(high_sim_mask[i])[0]
+
+                    if len(high_sim_indices) > 0:
+                        # 限制处理的对数
+                        high_sim_indices = high_sim_indices[:min(len(high_sim_indices), max_pairs)]
+                        target_indices = non_c_incorrect_indices[high_sim_indices]
+
+                        # 直接计算与所有高相似度节点的平均相似度
+                        target_features = Hi_train[target_indices].mean(0)  # 平均特征
+                        source_features = Hi_train[c_correct_indices[i]]
+
+                        sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
+                        Lp_losses.append(-sim)  # 负相似度
+
+        # === 忽略损失(Ln) - 增加与同c类错误分类的相似性 ===
+        c_incorrect_mask = (labels == c) & (~is_correct)
+        if c_incorrect_mask.sum() > 0:
+            c_incorrect_indices = torch.where(c_incorrect_mask)[0]
+            c_incorrect_features = Hi_norm[c_incorrect_indices]
+
+            # 批量计算相似度矩阵
+            sim_matrix = torch.mm(c_correct_features, c_incorrect_features.t())
+
+            # 找出高相似度对
+            high_sim_mask = sim_matrix > similarity_threshold
+
+            if high_sim_mask.sum() > 0:
+                # 为每个正确分类的c类样本找高相似度的c类错误样本
+                for i in range(len(c_correct_indices)):
+                    high_sim_indices = torch.where(high_sim_mask[i])[0]
+
+                    if len(high_sim_indices) > 0:
+                        # 限制处理的对数
+                        high_sim_indices = high_sim_indices[:min(len(high_sim_indices), max_pairs)]
+                        target_indices = c_incorrect_indices[high_sim_indices]
+
+                        # 计算与所有高相似度节点的平均相似度
+                        target_features = Hi_train[target_indices].mean(0)  # 平均特征
+                        source_features = Hi_train[c_correct_indices[i]].detach()  # 注意这里使用detach()
+
+                        sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
+                        Ln_losses.append(sim)  # 正相似度
+
+    # 计算最终损失
+    Lp = torch.tensor(0.0, device=data.x.device)
+    Ln = torch.tensor(0.0, device=data.x.device)
+
+    if Lp_losses:
+        Lp = torch.stack(Lp_losses).mean()
+
+    if Ln_losses:
+        Ln = torch.stack(Ln_losses).mean()
+
+    # 记录找到的准线节点对数量，便于调试
+    num_lp_pairs = len(Lp_losses)
+    num_ln_pairs = len(Ln_losses)
+
+    return Lp, Ln, num_lp_pairs, num_ln_pairs
+
 def calculate_class_weights(class_counts, beta=0.9999, adjustment=2.0):
     """
     计算优化的类别权重
@@ -118,27 +244,29 @@ def calculate_class_weights(class_counts, beta=0.9999, adjustment=2.0):
 
 
 def train():
-    """训练 GCN 模型，使用优化的损失函数和权重计算"""
+    """训练 GNN 模型，使用YAML配置中的参数"""
+
+    # 加载参数配置
+    config = load_config()
 
     # 记录开始时间
     start_time = time.time()
 
-    epoch_num = 1500
+    epoch_num = config["training"]["epoch_num"]
+    patience = config["training"]["patience"]
+    print_interval = config["training"]["print_interval"]
+    enable_early_stopping = config["training"]["enable_early_stopping"]
+
     data = preprocess_data(load_data())
 
-    model = RGCN(data.num_features, hidden_dim=128, output_dim=6).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, weight_decay=1e-4)  # 超参数 [lr: 0.001-0.005]
+    # 创建模型
+    model = get_model(config, data.num_features, device)
 
-    # 学习率调度器
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=0.01,  # 超参数 [max_lr: 0.005-0.01]
-        total_steps=epoch_num,
-        pct_start=0.2,  # 预热时间 [pct_start: 0.1-0.3]
-        anneal_strategy='cos',
-        div_factor=20,
-        final_div_factor=100
-    )
+    # 创建优化器
+    optimizer = get_optimizer(config, model.parameters())
+
+    # 创建学习率调度器
+    scheduler = get_scheduler(config, optimizer, epoch_num)
 
     # 计算类别数量
     class_counts = torch.zeros(6)
@@ -148,16 +276,15 @@ def train():
 
     logger.info(f"各类别样本数量: {class_counts.tolist()}")
 
-    # 调用工具函数计算权重
-    beta = 0.9999  # 超参数 [beta: 0.9-0.9999]
-    cb_adjustment = 2.0  # 超参数 [cb_adjustment: 1.5-3.0]
+    # 计算类别权重
+    beta = config["class_weights"]["beta"]
+    cb_adjustment = config["class_weights"]["cb_adjustment"]
     class_weights = calculate_class_weights(class_counts, beta, cb_adjustment)
     class_weights = class_weights.to(device)
 
     logger.info(f"优化后类别权重: {class_weights.tolist()}")
 
     # 早停参数
-    patience = 150  # 超参数 [patience: 50-150]
     counter = 0
     best_val_acc = 0.0
     best_f1 = 0.0
@@ -175,10 +302,19 @@ def train():
     epochs = []
 
     # 设置混合损失参数
-    focal_gamma = 3.0 # 超参数 [focal_gamma: 1.0-2.5]
-    label_smoothing = 0.2  # 超参数 [label_smoothing: 0.05-0.2]
-    loss_balance = 0.7  # 超参数 [loss_balance: 0.7-0.9]
+    focal_gamma = config["loss"]["focal_gamma"]
+    label_smoothing = config["loss"]["label_smoothing"]
+    loss_balance = config["loss"]["loss_balance"]
 
+    # 设置Lp和Ln的权重系数
+    lp_weight = config["loss"]["lp_weight"]
+    ln_weight = config["loss"]["ln_weight"]
+    enable_r_cam = config["loss"]["enable_r_cam"]
+    similarity_threshold = config["emphasis_ignore_loss"]["similarity_threshold"]
+    max_pairs = config["emphasis_ignore_loss"]["max_pairs"]
+
+    # 梯度裁剪参数
+    clip_norm = config["gradient"]["clip_norm"]
 
     for epoch in range(epoch_num):
         model.train()
@@ -187,11 +323,11 @@ def train():
         # 动态调整focal_gamma - 随训练进程逐渐降低
         current_gamma = max(1.0, focal_gamma * (1 - epoch / epoch_num))
 
-        # out = model(train_data.x, train_data.edge_index)
+        # 前向传播
         out = model(data.x, data.edge_index, data.edge_type)
 
-        # 使用混合损失函数
-        loss = hybrid_loss(
+        # 使用混合损失函数计算主损失
+        main_loss = hybrid_loss(
             out[data.train_mask],
             data.y[data.train_mask],
             class_weights=class_weights,
@@ -200,10 +336,33 @@ def train():
             balance=loss_balance
         )
 
+        # 计算强调损失和忽略损失
+        if enable_r_cam:
+            Lp, Ln, num_lp_pairs, num_ln_pairs = calculate_emphasis_ignore_loss_optimized(
+                model, data, out,
+                similarity_threshold=similarity_threshold,
+                max_pairs=max_pairs
+            )
+
+            # 记录找到的准线节点对数量
+            if epoch % print_interval == 0:
+                logger.info(f"找到的准线节点对: Lp={num_lp_pairs}, Ln={num_ln_pairs}")
+
+            # 动态调整损失
+            if num_lp_pairs > 0 and num_ln_pairs > 0:
+                # 有效对数足够时才应用损失
+                loss = main_loss + lp_weight * Lp + ln_weight * Ln
+            else:
+                # 否则只使用主损失
+                loss = main_loss
+        else:
+            loss = main_loss
+
+        # 反向传播
         loss.backward()
 
         # 梯度裁剪避免爆炸
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.5)  # 超参数 [max_norm: 0.5-2.0]
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
 
         optimizer.step()
 
@@ -246,12 +405,18 @@ def train():
         # 更新学习率
         scheduler.step()
 
-        # 每30个epoch打印指标
-        if epoch % 30 == 0:
-            logger.info(
-                f"Epoch {epoch}: 【Loss】 Train: {loss.item():.4f}, Val: {val_loss.item():.4f} "
-                f"【Val Metrics】 Acc: {val_acc:.4f}, P: {val_precision:.4f}, R: {val_recall:.4f}, F1: {val_f1:.4f}"
-            )
+        # 每interval个epoch打印指标
+        if epoch % print_interval == 0:
+            if enable_r_cam:
+                logger.info(
+                    f"Epoch {epoch}: 【Loss】 Main: {main_loss.item():.4f}, Lp: {Lp.item():.4f}, Ln: {Ln.item():.4f}, Total: {loss.item():.4f} "
+                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}"
+                )
+            else:
+                logger.info(
+                    f"Epoch {epoch}: 【Loss】 Main: {main_loss.item():.4f}, Total: {loss.item():.4f} "
+                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}"
+                )
 
         # 使用F1分数作为早停标准
         if val_f1 > best_f1:
@@ -264,7 +429,7 @@ def train():
             counter += 1
 
         # 早停检查
-        if counter >= patience:
+        if enable_early_stopping and counter >= patience:
             logger.info(f"早停触发，停止训练! 最佳F1分数: {best_f1:.4f}, 验证准确率: {best_val_acc:.6f}")
             break
 
@@ -273,13 +438,9 @@ def train():
     formatted_time = time.strftime("%M:%S", time.gmtime(total_time))
     logger.info(f"训练完成，总耗时: {formatted_time}")
 
-    # 绘制混淆矩阵
-    final_confusion_matrix = confusion_matrix(y_true, y_pred)
-    logger.info(f"最终混淆矩阵:\n{final_confusion_matrix}")
-
-    # 添加可视化代码
+    # 可视化训练过程
     visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
-                               val_precisions, val_recalls, val_f1s)
+                            val_precisions, val_recalls, val_f1s)
 
     return best_model_path
 
@@ -369,9 +530,24 @@ def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
     plt.close('all')
 
 
-def evaluate(model, split):
-    """在验证集或测试集上评估模型，计算多种性能指标"""
-    data = preprocess_data(load_data())
+def evaluate(model, split, data=None, config=None):
+    """在验证集或测试集上评估模型，计算多种性能指标
+
+    Args:
+        model: 要评估的模型
+        split: 评估集类型，"val"或"test"
+        data: 预处理好的数据，如果为None则重新加载
+        config: 配置参数，如果为None则使用默认配置
+    """
+    # 如果没有传入数据，则加载数据
+    if data is None:
+        data = preprocess_data(load_data())
+
+    # 如果没有传入配置，则加载默认配置
+    if config is None:
+        config = load_config()
+
+    logger = get_logger("Evaluate")
     model.eval()
     results = {}
 
@@ -382,8 +558,10 @@ def evaluate(model, split):
         # 根据数据集类型选择正确的掩码
         if split == "val":
             mask = data.val_mask
+            logger.info("在验证集上评估模型...")
         elif split == "test":
             mask = data.test_mask
+            logger.info("在测试集上评估模型...")
         else:
             raise ValueError(f"不支持的数据集类型: {split}")
 
@@ -412,21 +590,40 @@ def evaluate(model, split):
     return results
 
 
-def test():
-    """测试模型"""
+def test(model_path=None, config_path="config.yml"):
+    """测试模型
+
+    Args:
+        model_path: 模型权重路径，如果为None则使用默认路径
+        config_path: 配置文件路径
+    """
+    # 加载配置
+    config = load_config(config_path)
+    logger = get_logger("Test")
+
+    logger.info(f"{'=' * 15} 测试集进行评估 {'=' * 15}")
+
     # 加载测试数据
     data = preprocess_data(load_data())
 
-    # 初始化模型，确保与训练时使用相同的参数
-    model = RGCN(data.num_features, hidden_dim=128, output_dim=6).to(device)
+    # 使用配置创建模型
+    model = get_model(config, data.num_features, device)
+
+    # 确定模型权重路径
+    if model_path is None:
+        model_path = os.path.join(config["paths"]["model_dir"], "best_model.pth")
 
     # 加载最佳模型权重
-    model.load_state_dict(
-        torch.load(os.path.join(output_dir, "model/best_model.pth"),
-                   map_location=device, weights_only=True))
+    if os.path.exists(model_path):
+        model.load_state_dict(
+            torch.load(model_path, map_location=device, weights_only=True))
+        logger.info(f"成功加载模型权重: {model_path}")
+    else:
+        logger.error(f"模型权重文件不存在: {model_path}")
+        return None
 
-    # 直接评估，不需要传入训练数据
-    test_results = evaluate(model, "test")
+    # 评估模型
+    test_results = evaluate(model, "test", data, config)
 
     # 输出测试结果
     logger.info(f"{'=' * 15} 测试集评估结果 {'=' * 15}")
@@ -442,6 +639,8 @@ def test():
 
     # 计算每个类别的预测准确率
     logger.info(f"\n{'=' * 15} 各类别预测准确率 {'=' * 15}")
+
+    # 直接从混淆矩阵计算每个类别的准确率
     for i in range(conf_matrix.shape[0]):
         row_sum = conf_matrix[i].sum()
         if row_sum > 0:  # 避免除零错误
@@ -453,65 +652,9 @@ def test():
     return test_results
 
 
-# if __name__ == "__main__":
-#     try:
-#         # 存储多轮测试的结果
-#         rounds = 5
-#         all_results = []
-#
-#         logger.info(f"开始执行{rounds}轮训练与评估...")
-#
-#         for round_num in range(1, rounds + 1):
-#             logger.info(f"\n{'=' * 20} 第 {round_num}/{rounds} 轮训练 {'=' * 20}")
-#             set_seed(42 + round_num)  # 每轮使用不同种子
-#
-#             best_model_path = train()
-#             if best_model_path:
-#                 test_results = test()
-#                 all_results.append(test_results)
-#                 logger.info(f"第 {round_num} 轮完成，F1: {test_results['f1']:.6f}")
-#             else:
-#                 logger.error(f"第 {round_num} 轮训练失败，跳过测试")
-#
-#         # 计算统计数据
-#         if all_results:
-#             logger.info(f"\n{'=' * 20} {rounds} 轮训练统计结果 {'=' * 20}")
-#
-#             # 提取各项指标
-#             accuracies = [r['accuracy'] for r in all_results]
-#             precisions = [r['precision'] for r in all_results]
-#             recalls = [r['recall'] for r in all_results]
-#             f1s = [r['f1'] for r in all_results]
-#
-#             # 计算平均值和标准差
-#             import numpy as np
-#
-#             metrics = {
-#                 "准确率 (Accuracy)": accuracies,
-#                 "精确率 (Precision)": precisions,
-#                 "召回率 (Recall)": recalls,
-#                 "F1分数": f1s
-#             }
-#
-#             for name, values in metrics.items():
-#                 mean = np.mean(values)
-#                 std = np.std(values)
-#                 logger.info(f"{name}: {mean:.6f} ± {std:.6f}")
-#
-#             # 打印所有轮次的原始数据
-#             logger.info("\n各轮次详细指标:")
-#             for i, r in enumerate(all_results):
-#                 logger.info(
-#                     f"轮次 {i + 1}: Acc={r['accuracy']:.4f}, P={r['precision']:.4f}, R={r['recall']:.4f}, F1={r['f1']:.4f}")
-#
-#     except Exception as e:
-#         logger.error(f"发生错误: {e}")
-#         import traceback
-#
-#         logger.error(traceback.format_exc())
 if __name__ == "__main__":
     try:
-        set_seed()
+        set_seed(45)
         best_model_path = train()
         if best_model_path:
             test()

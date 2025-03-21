@@ -3,6 +3,9 @@ import random
 import numpy as np
 import os
 import logging
+import yaml
+import torch.optim as optim
+from torch.optim import lr_scheduler
 from datetime import datetime
 
 # 全局日志配置
@@ -10,6 +13,7 @@ LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s-%(name)s-%(levelname)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 LOG_DIR = "../logs"
+CONFIG_PATH = "config.yml"
 
 # 确保日志目录存在
 if not os.path.exists(LOG_DIR):
@@ -72,6 +76,12 @@ def get_logger(name):
 
 
 def set_seed(seed=42):
+    """
+    设置随机种子，确保实验可复现性
+
+    Args:
+        seed: 随机种子值，默认为42
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -80,3 +90,247 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+
+# ===== 配置文件相关功能 =====
+
+def load_config(config_path=CONFIG_PATH):
+    """
+    加载YAML配置文件
+
+    Args:
+        config_path: 配置文件路径，默认为"config.yml"
+
+    Returns:
+        dict: 加载的配置字典
+    """
+    logger = get_logger("Config")
+
+    if not os.path.exists(config_path):
+        logger.warning(f"配置文件 {config_path} 不存在，将使用默认配置")
+        return get_default_config()
+
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+
+        logger.info(f"成功加载配置文件: {config_path}")
+        return config
+    except Exception as e:
+        logger.error(f"加载配置文件失败: {e}")
+        logger.info("将使用默认配置")
+        return get_default_config()
+
+
+def get_default_config():
+    """
+    返回默认训练配置
+
+    Returns:
+        dict: 默认配置字典
+    """
+    return {
+        "training": {
+            "epoch_num": 1500,
+            "patience": 100,
+            "print_interval": 30,
+            "enable_early_stopping": True
+        },
+        "model": {
+            "type": "HAN",
+            "hidden_dim": 128,
+            "output_dim": 6
+        },
+        "optimizer": {
+            "type": "AdamW",
+            "lr": 0.005,
+            "weight_decay": 1e-4
+        },
+        "scheduler": {
+            "type": "OneCycleLR",
+            "max_lr": 0.01,
+            "pct_start": 0.2,
+            "anneal_strategy": "cos",
+            "div_factor": 20,
+            "final_div_factor": 100
+        },
+        "class_weights": {
+            "beta": 0.9999,
+            "cb_adjustment": 2.0
+        },
+        "loss": {
+            "focal_gamma": 3.0,
+            "label_smoothing": 0.2,
+            "loss_balance": 0.7,
+            "lp_weight": 0.1,
+            "ln_weight": 0.1,
+            "enable_r_cam": False
+        },
+        "gradient": {
+            "clip_norm": 1.5
+        },
+        "emphasis_ignore_loss": {
+            "similarity_threshold": 0.7,
+            "max_pairs": 100
+        },
+        "paths": {
+            "model_dir": "../output/model",
+            "log_dir": "../logs"
+        },
+        "evaluation": {
+            "visualization": True
+        }
+    }
+
+
+def save_config(config, config_path=CONFIG_PATH):
+    """
+    保存配置到YAML文件
+
+    Args:
+        config: 配置字典
+        config_path: 保存路径，默认为"config.yml"
+    """
+    logger = get_logger("Config")
+
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        logger.info(f"配置已保存到: {config_path}")
+    except Exception as e:
+        logger.error(f"保存配置失败: {e}")
+
+
+def get_model(config, num_features, device):
+    """
+    根据配置创建模型实例
+
+    Args:
+        config: 配置字典
+        num_features: 输入特征维度
+        device: 设备(CPU/GPU)
+
+    Returns:
+        torch.nn.Module: 创建的模型实例
+    """
+    logger = get_logger("ModelBuilder")
+
+    model_config = config["model"]
+    model_type = model_config["type"]
+    hidden_dim = model_config["hidden_dim"]
+    output_dim = model_config["output_dim"]
+
+    if model_type == "RGCN":
+        try:
+            from gcn import RGCN
+            model = RGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim)
+            logger.info(f"创建RGCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}")
+        except ImportError:
+            logger.error("无法导入RGCN模型，请确保gcn.py文件存在")
+            raise
+    elif model_type == "HAN":
+        try:
+            from han import HAN
+            model = HAN(num_features, hidden_dim=hidden_dim, output_dim=output_dim)
+            logger.info(f"创建HAN模型: hidden_dim={hidden_dim}, output_dim={output_dim}")
+        except ImportError:
+            logger.error("无法导入HAN模型，请确保gcn.py文件存在")
+            raise
+    else:
+        logger.error(f"不支持的模型类型: {model_type}")
+        raise ValueError(f"不支持的模型类型: {model_type}")
+
+    return model.to(device)
+
+
+def get_optimizer(config, model_parameters):
+    """
+    根据配置创建优化器
+
+    Args:
+        config: 配置字典
+        model_parameters: 模型参数
+
+    Returns:
+        torch.optim.Optimizer: 创建的优化器
+    """
+    logger = get_logger("OptimizerBuilder")
+
+    optimizer_config = config["optimizer"]
+    optimizer_type = optimizer_config["type"]
+    lr = optimizer_config["lr"]
+    weight_decay = optimizer_config["weight_decay"]
+
+    if optimizer_type == "AdamW":
+        optimizer = optim.AdamW(model_parameters, lr=lr, weight_decay=weight_decay)
+        logger.info(f"创建AdamW优化器: lr={lr}, weight_decay={weight_decay}")
+    elif optimizer_type == "Adam":
+        optimizer = optim.Adam(model_parameters, lr=lr, weight_decay=weight_decay)
+        logger.info(f"创建Adam优化器: lr={lr}, weight_decay={weight_decay}")
+    elif optimizer_type == "SGD":
+        optimizer = optim.SGD(model_parameters, lr=lr, weight_decay=weight_decay, momentum=0.9)
+        logger.info(f"创建SGD优化器: lr={lr}, weight_decay={weight_decay}, momentum=0.9")
+    else:
+        logger.error(f"不支持的优化器类型: {optimizer_type}")
+        raise ValueError(f"不支持的优化器类型: {optimizer_type}")
+
+    return optimizer
+
+
+def get_scheduler(config, optimizer, epoch_num):
+    """
+    根据配置创建学习率调度器
+
+    Args:
+        config: 配置字典
+        optimizer: 优化器实例
+        epoch_num: 总训练轮数
+
+    Returns:
+        torch.optim.lr_scheduler._LRScheduler: 创建的学习率调度器
+    """
+    logger = get_logger("SchedulerBuilder")
+
+    scheduler_config = config["scheduler"]
+    scheduler_type = scheduler_config["type"]
+
+    if scheduler_type == "OneCycleLR":
+        scheduler = lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=scheduler_config["max_lr"],
+            total_steps=epoch_num,
+            pct_start=scheduler_config["pct_start"],
+            anneal_strategy=scheduler_config["anneal_strategy"],
+            div_factor=scheduler_config["div_factor"],
+            final_div_factor=scheduler_config["final_div_factor"]
+        )
+        logger.info(
+            f"创建OneCycleLR调度器: max_lr={scheduler_config['max_lr']}, pct_start={scheduler_config['pct_start']}")
+    else:
+        logger.error(f"不支持的调度器类型: {scheduler_type}")
+        raise ValueError(f"不支持的调度器类型: {scheduler_type}")
+
+    return scheduler
+
+
+def get_config_value(config, path, default=None):
+    """
+    安全地从配置字典中获取嵌套值
+
+    Args:
+        config: 配置字典
+        path: 键路径，例如 "model.hidden_dim"
+        default: 如果路径不存在，返回的默认值
+
+    Returns:
+        获取的值或默认值
+    """
+    keys = path.split('.')
+    value = config
+
+    try:
+        for key in keys:
+            value = value[key]
+        return value
+    except (KeyError, TypeError):
+        return default

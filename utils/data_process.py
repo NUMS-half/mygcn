@@ -359,33 +359,176 @@ class GraphGenerator:
         self.logger.debug(f"edge_index shape: {edge_index.shape}")
         self.logger.debug(f"edge_type shape: {edge_type.shape}")
 
-    @staticmethod
-    def visualize_graph(graph, save=False):
-        """可视化知识图谱"""
-        # 设置节点颜色和大小
-        node_colors = []
+    def visualize_graph(self, graph, save=False, output_path="../data/processed/knowledge_graph_advanced.png"):
+        """
+        高级知识图谱可视化函数，支持多种节点类型和关系类型的区分显示
+
+        Args:
+            graph: NetworkX图对象
+            save: 是否保存图像
+            output_path: 图像保存路径
+        """
+        # 设置matplotlib样式
+        plt.style.use('seaborn-v0_8-whitegrid')
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'Arial Unicode MS']
+        plt.rcParams['axes.unicode_minus'] = False
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.figure(figsize=(16, 12), facecolor='white')
+
+        # 使用Fruchterman-Reingold布局，对小型图更清晰
+        pos = nx.spring_layout(graph, k=1.2, iterations=200, seed=42)
+        pos = {node: coord * 2.0 for node, coord in pos.items()}  # 扩大1.5倍
+
+        # 获取所有节点类型和关系类型
+        node_types = {data['type'] for _, data in graph.nodes(data=True)}
+        relation_types = {data.get('relation_type', -1) for _, _, data in graph.edges(data=True)}
+
+        # 为节点类型设置颜色映射
+        node_type_colors = {
+            'order': '#FF9999',  # 浅红色
+            'status': '#66B2FF'  # 浅蓝色
+        }
+
+        # 为关系类型设置颜色和样式映射
+        relation_colors = {
+            0: '#E6194B',  # 红色
+            1: '#3CB44B',  # 绿色
+            2: '#FFA500',  # 橙色
+        }
+
+        relation_styles = {
+            0: 'solid',
+            1: 'dashed',
+            2: 'dotted',
+            3: 'dashdot',
+            4: (0, (3, 1, 1, 1)),  # 自定义虚线模式
+            5: (0, (5, 1)),  # 自定义虚线模式
+            -1: 'solid'
+        }
+
+        relation_widths = {k: 1.5 + 0.5 * k if k >= 0 else 1.0 for k in relation_types}
+
+        # 为节点设置大小和标签
         node_sizes = []
+        node_colors = []
+        node_shapes = []
+        node_labels = {}
 
         for node, data in graph.nodes(data=True):
-            if data['type'] == 'order':  # 订单ID节点
-                node_colors.append('lightgreen')
-                node_sizes.append(300)  # 订单ID节点的大小
-            elif data['type'] == 'status':  # 状态编码节点
-                node_colors.append('skyblue')
-                node_sizes.append(150)  # 状态编码节点的大小
+            node_type = data['type']
+            if node_type == 'order':
+                size = 800  # 订单节点更大
+                shape = 'o'  # 圆形
+                # 创建简洁标签
+                node_labels[node] = f"{str(node)[:8]}..."
+            else:  # status
+                size = 500
+                shape = 's'  # 方形
+                node_labels[node] = str(node)
 
-        # 绘制图
-        plt.figure(figsize=(12, 12))
-        pos = nx.spring_layout(graph, seed=42, k=0.1)  # 使用spring布局，k决定节点之间的间距
-        nx.draw(graph, pos, with_labels=True, node_color=node_colors, node_size=node_sizes, font_size=10,
-                font_weight='bold', edge_color='gray')
+            node_sizes.append(size)
+            node_colors.append(node_type_colors[node_type])
+            node_shapes.append(shape)
 
-        plt.title(f"Knowledge Graph", fontsize=14)
-        plt.show()
+        # 绘制节点
+        # 订单节点（圆形）
+        order_nodes = [n for n, d in graph.nodes(data=True) if d['type'] == 'order']
+        order_sizes = [node_sizes[i] for i, (n, _) in enumerate(graph.nodes(data=True)) if n in order_nodes]
+        nx.draw_networkx_nodes(graph, pos, nodelist=order_nodes,
+                               node_color=node_type_colors['order'],
+                               node_size=order_sizes, alpha=0.9,
+                               node_shape='o', edgecolors='black', linewidths=1)
+
+        # 状态节点（方形）
+        status_nodes = [n for n, d in graph.nodes(data=True) if d['type'] == 'status']
+        status_sizes = [node_sizes[i] for i, (n, _) in enumerate(graph.nodes(data=True)) if n in status_nodes]
+        nx.draw_networkx_nodes(graph, pos, nodelist=status_nodes,
+                               node_color=node_type_colors['status'],
+                               node_size=status_sizes, alpha=0.9,
+                               node_shape='s', edgecolors='black', linewidths=1)
+
+        # 分别绘制不同类型的边
+        for relation_type in relation_types:
+            edges = [(u, v) for u, v, d in graph.edges(data=True)
+                     if d.get('relation_type', -1) == relation_type]
+            if edges:
+                nx.draw_networkx_edges(graph, pos, edgelist=edges,
+                                       width=relation_widths[relation_type],
+                                       edge_color=relation_colors[relation_type],
+                                       style=relation_styles[relation_type],
+                                       alpha=0.8,
+                                       connectionstyle='arc3,rad=0.1')  # 弯曲的边，避免重叠
+
+        # 绘制节点标签
+        nx.draw_networkx_labels(graph, pos, labels=node_labels,
+                                font_size=10, font_weight='bold',
+                                font_family='sans-serif')
+
+        # 添加图例
+        # 节点类型图例
+        node_handles = []
+        node_labels = []
+        for node_type, color in node_type_colors.items():
+            if node_type == 'order':
+                node_handles.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
+                                               markersize=12, markeredgecolor='black', markeredgewidth=1))
+                node_labels.append('订单节点')
+            else:
+                node_handles.append(plt.Line2D([0], [0], marker='s', color='w', markerfacecolor=color,
+                                               markersize=16, markeredgecolor='black', markeredgewidth=1))
+                node_labels.append('状态/特征节点')
+
+        # 关系类型图例
+        relation_handles = []
+        relation_labels = []
+        relation_name_map = {
+            0: "关系类型 0 - 用户类型特征",
+            1: "关系类型 1 - 用户套餐特征",
+            2: "关系类型 2 - 用户行为特征"
+        }
+
+        for rel_type in sorted(relation_types):
+            if rel_type in relation_colors:
+                relation_handles.append(plt.Line2D([0], [0], color=relation_colors[rel_type],
+                                                   linestyle=relation_styles[rel_type],
+                                                   lw=2))
+                relation_labels.append(relation_name_map.get(rel_type, f"关系类型 {rel_type}"))
+
+        # 合并图例
+        all_handles = node_handles + relation_handles
+        all_labels = node_labels + relation_labels
+        plt.legend(all_handles, all_labels, loc='upper right', fontsize=16,
+                   fancybox=True, framealpha=0.9, edgecolor='gray')
+
+        # 设置标题和背景
+        plt.title("知识图谱可视化", fontsize=24, fontweight='bold', pad=20)
+
+        # 移除坐标轴
+        plt.axis('off')
+
+        # 添加边框
+        plt.gca().spines['top'].set_visible(True)
+        plt.gca().spines['right'].set_visible(True)
+        plt.gca().spines['bottom'].set_visible(True)
+        plt.gca().spines['left'].set_visible(True)
+
+        # 添加水印
+        plt.figtext(0.5, 0.01, "知识图谱关系分析", ha="center", fontsize=10, color="gray")
+
+        # 调整布局
+        plt.tight_layout()
+
+        # 保存和显示
         if save:
-            output_file = os.path.join("../data/processed", f"knowledge_graph.png")
-            plt.savefig(output_file)
-            print(f"图谱已保存为: {output_file}")
+            plt.savefig(output_path, dpi=400, bbox_inches='tight', transparent=True)
+            self.logger.info(f"图谱已保存为: {output_path}")
+
+        plt.show()
+
+        # 如果节点非常多，可以输出节点和关系统计信息
+        self.logger.info(f"图谱统计: {graph.number_of_nodes()}个节点, {graph.number_of_edges()}条边")
+        self.logger.info(f"节点类型: {', '.join(node_types)}")
+        self.logger.info(f"关系类型: {', '.join(str(t) for t in sorted(relation_types))}")
 
     def process_dataset(self, train_ratio, val_ratio):
         """数据集处理步骤"""
@@ -403,7 +546,7 @@ class GraphGenerator:
         try:
             self.logger.info(f"{'=' * 20} 开始处理数据集 {'=' * 20}")
 
-            set_seed()
+            set_seed(3407)
             self.load_data()  # 加载数据
             self.initialize_encoding()  # 初始化编码
             self.save_encoding_info()  # 保存编码信息

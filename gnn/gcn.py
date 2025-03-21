@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, RGCNConv
+from torch_geometric.nn import GCNConv, RGCNConv, GATConv
 
 
 # 1. Base GCNConv - 2 layers
@@ -214,3 +214,121 @@ class RGCN(torch.nn.Module):
         x = self.classifier(x)
 
         return F.log_softmax(x, dim=1)
+
+# class RGCN(torch.nn.Module):
+#     def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, dropout=0.3, edge_dropout=0.1):
+#         super(RGCN, self).__init__()
+#
+#         # 特征转换层
+#         self.feature_encoder = nn.Sequential(
+#             nn.Linear(input_dim, hidden_dim),
+#             nn.LayerNorm(hidden_dim),
+#             nn.GELU(),
+#             nn.Dropout(dropout * 0.8)
+#         )
+#
+#         # RGCN卷积层 - 使用不同的聚合方式
+#         self.conv1 = RGCNConv(hidden_dim, hidden_dim, num_relations, aggr='add')
+#         self.ln1 = LayerNorm(hidden_dim)
+#
+#         self.conv2 = RGCNConv(hidden_dim, hidden_dim, num_relations, aggr='mean')
+#         self.ln2 = LayerNorm(hidden_dim)
+#
+#         self.conv3 = RGCNConv(hidden_dim, hidden_dim, num_relations, aggr='max')
+#         self.ln3 = LayerNorm(hidden_dim)
+#
+#         # 多头注意力层
+#         self.attention = GATConv(
+#             hidden_dim,
+#             hidden_dim // 4,
+#             heads=4,
+#             dropout=dropout
+#         )
+#         self.ln_att = LayerNorm(hidden_dim)
+#
+#         # 特征融合层
+#         self.fusion = nn.Sequential(
+#             nn.Linear(hidden_dim * 3, hidden_dim),
+#             nn.LayerNorm(hidden_dim),
+#             nn.GELU(),
+#             nn.Dropout(dropout * 0.7)
+#         )
+#
+#         # 分类器
+#         self.classifier = nn.Sequential(
+#             nn.Linear(hidden_dim * 2, hidden_dim),
+#             nn.LayerNorm(hidden_dim),
+#             nn.GELU(),
+#             nn.Dropout(dropout * 0.8),
+#             nn.Linear(hidden_dim, hidden_dim // 2),
+#             nn.LayerNorm(hidden_dim // 2),
+#             nn.GELU(),
+#             nn.Dropout(dropout * 0.6),
+#             nn.Linear(hidden_dim // 2, output_dim)
+#         )
+#
+#         # 模型参数
+#         self.dropout = dropout
+#         self.edge_dropout = edge_dropout
+#         self.num_relations = num_relations
+#
+#     def _preprocess_edges(self, edge_index, edge_type):
+#         """边预处理函数：应用边dropout"""
+#         if self.training and self.edge_dropout > 0:
+#             mask = torch.rand(edge_index.size(1), device=edge_index.device) > self.edge_dropout
+#             edge_index = edge_index[:, mask]
+#             edge_type = edge_type[mask]
+#         return edge_index, edge_type
+#
+#     def _extract_features(self, x, edge_index, edge_type):
+#         """特征提取核心功能：返回多个层次的特征"""
+#         # 初始特征转换
+#         x_0 = self.feature_encoder(x)
+#
+#         # 多层次特征抽取
+#         x_1 = F.relu(self.ln1(self.conv1(x_0, edge_index, edge_type)))
+#         x_1 = F.dropout(x_1, p=self.dropout, training=self.training)
+#
+#         x_2 = F.relu(self.ln2(self.conv2(x_1, edge_index, edge_type)))
+#         x_2 = F.dropout(x_2, p=self.dropout, training=self.training)
+#
+#         # 带有残差连接的第三层
+#         x_3 = F.relu(self.ln3(self.conv3(x_2, edge_index, edge_type)))
+#         x_3 = x_3 + x_1 * 0.2 + x_2 * 0.3  # 多层残差连接
+#         x_3 = F.dropout(x_3, p=self.dropout, training=self.training)
+#
+#         # 注意力层增强特征学习
+#         x_att = self.attention(x_3, edge_index)
+#         x_att = self.ln_att(x_att)
+#         x_att = F.dropout(x_att, p=self.dropout, training=self.training)
+#
+#         # 多层特征融合
+#         multi_scale = torch.cat([x_1, x_2, x_3], dim=-1)
+#         fused_features = self.fusion(multi_scale)
+#
+#         return fused_features, x_att
+#
+#     def forward(self, x, edge_index, edge_type):
+#         # 边缘预处理
+#         edge_index, edge_type = self._preprocess_edges(edge_index, edge_type)
+#
+#         # 提取特征
+#         fused_features, x_att = self._extract_features(x, edge_index, edge_type)
+#
+#         # 结合注意力特征和融合特征
+#         final_features = torch.cat([fused_features, x_att], dim=-1)
+#
+#         # 分类
+#         logits = self.classifier(final_features)
+#
+#         return F.log_softmax(logits, dim=1)
+#
+#     def get_node_reps(self, x, edge_index, edge_type, batch=None):
+#         """获取节点的表示向量，用于计算Lp和Ln损失"""
+#         # 边缘预处理
+#         edge_index, edge_type = self._preprocess_edges(edge_index, edge_type)
+#
+#         # 提取特征并返回融合特征
+#         fused_features, _ = self._extract_features(x, edge_index, edge_type)
+#
+#         return fused_features
