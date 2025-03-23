@@ -79,24 +79,48 @@ def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1
         label_smoothing: 标签平滑系数
         balance: Focal Loss比重 (1-balance为标签平滑损失比重)
     """
+    # 获取类别数量
     num_classes = pred.size(1)
-    # 1. Focal Loss部分
-    log_prob = F.log_softmax(pred, dim=1)
-    prob = torch.exp(log_prob)
-    target_prob = prob.gather(1, target.unsqueeze(1)).squeeze(1)  # 获取目标类别的概率
-    focal_weight = (1 - target_prob) ** gamma  # 计算focal权重
-    # 应用类别权重
-    if class_weights is not None:
-        per_sample_weights = class_weights.gather(0, target)
-        focal_weight = focal_weight * per_sample_weights
 
-    focal_loss_val = -focal_weight * log_prob.gather(1, target.unsqueeze(1)).squeeze(1)
-    # 2. 标签平滑部分
-    target_one_hot = F.one_hot(target, num_classes).float()  # 将目标转换为one-hot编码
-    soft_target = target_one_hot * (1 - label_smoothing) + label_smoothing / num_classes  # 应用标签平滑
-    smooth_loss_val = -torch.sum(soft_target * log_prob, dim=1)  # 计算交叉熵
-    # 3. 组合损失
-    combined_loss = balance * focal_loss_val + (1 - balance) * smooth_loss_val
+    # 1. 计算概率和对数概率
+    # 对预测logits应用log_softmax得到对数概率
+    log_prob = F.log_softmax(pred, dim=1)  # [batch_size, num_classes]
+    # 计算预测概率（指数变换）
+    prob = torch.exp(log_prob)  # [batch_size, num_classes]
+
+    # 2. Focal Loss计算
+    # 提取每个样本对应目标类别的预测概率
+    target_prob = prob.gather(1, target.unsqueeze(1)).squeeze(1)  # [batch_size]
+
+    # Focal Loss的核心: (1-p_t)^γ使模型关注难分样本
+    # 当γ>0时，易分样本(p_t接近1)的权重变小，难分样本(p_t接近0)的权重变大
+    focal_weight = (1 - target_prob) ** gamma  # [batch_size]
+
+    # 应用类别权重以处理类别不平衡问题
+    if class_weights is not None:
+        # 为每个样本获取对应类别的权重
+        per_sample_weights = class_weights.gather(0, target)  # [batch_size]
+        # 将类别权重应用到focal权重上
+        focal_weight = focal_weight * per_sample_weights  # [batch_size]
+
+    # 计算加权的Focal Loss值
+    focal_loss_val = -focal_weight * log_prob.gather(1, target.unsqueeze(1)).squeeze(1)  # [batch_size]
+
+    # 3. 标签平滑损失计算
+    # 将目标标签转换为one-hot编码
+    target_one_hot = F.one_hot(target, num_classes).float()  # [batch_size, num_classes]
+
+    # 应用标签平滑: 主类别概率为(1-α)，其余类别共享α概率
+    soft_target = target_one_hot * (1 - label_smoothing) + label_smoothing / num_classes  # [batch_size, num_classes]
+
+    # 计算平滑标签的交叉熵损失
+    smooth_loss_val = -torch.sum(soft_target * log_prob, dim=1)  # [batch_size]
+
+    # 4. 组合两种损失
+    # 加权组合Focal Loss和标签平滑损失
+    combined_loss = balance * focal_loss_val + (1 - balance) * smooth_loss_val  # [batch_size]
+
+    # 返回批次平均损失
     return combined_loss.mean()
 
 
@@ -109,9 +133,9 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
         data: 图数据
         out: 模型输出
         similarity_threshold: 相似度阈值，默认0.7
-        max_pairs: 每个类别最大考虑的节点对数量，防止过度计算
+        max_pairs: （优化）每个类别最大考虑的节点对数量，防止过度计算
     """
-    # 1. 只提取一次节点表示并归一化
+    # 1. # 得到 GNN 输出的节点表示矩阵 Hi, 只提取一次节点表示并归一化
     Hi = model.get_node_reps(data.x, data.edge_index, data.edge_type,
                              data.batch if hasattr(data, 'batch') else None)
 
@@ -121,7 +145,7 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
     labels = data.y[mask]
     predicted_labels = out[mask].argmax(dim=1)
 
-    # 3. 提前归一化所有特征向量（只计算一次）
+    # 3. （优化）提前归一化所有特征向量，减少重复计算
     Hi_norm = F.normalize(Hi_train, p=2, dim=1)
 
     # 4. 计算预测正确的样本
@@ -203,8 +227,9 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
                         Ln_losses.append(sim)  # 正相似度
 
     # 计算最终损失
-    Lp = torch.tensor(0.0, device=data.x.device)
-    Ln = torch.tensor(0.0, device=data.x.device)
+    device = data.x.device
+    Lp = torch.tensor(0.0, device=device)
+    Ln = torch.tensor(0.0, device=device)
 
     if Lp_losses:
         Lp = torch.stack(Lp_losses).mean()
@@ -318,7 +343,6 @@ def train():
 
     for epoch in range(epoch_num):
         model.train()
-        optimizer.zero_grad()
 
         # 动态调整focal_gamma - 随训练进程逐渐降低
         current_gamma = max(1.0, focal_gamma * (1 - epoch / epoch_num))
@@ -351,37 +375,22 @@ def train():
             # 动态调整损失
             if num_lp_pairs > 0 and num_ln_pairs > 0:
                 # 有效对数足够时才应用损失
-                loss = main_loss + lp_weight * Lp + ln_weight * Ln
+                # loss = main_loss + lp_weight * Lp + ln_weight * Ln
+                loss = main_loss + Lp + Ln
             else:
                 # 否则只使用主损失
                 loss = main_loss
         else:
             loss = main_loss
 
-        # 反向传播
+        # 反向传播与优化
+        optimizer.zero_grad()
         loss.backward()
 
         # 梯度裁剪避免爆炸
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
 
         optimizer.step()
-
-        # # （attention）计算各类别错误率并更新权重
-        # if epoch % 5 == 0:  # 每5个epoch更新一次
-        #     with torch.no_grad():
-        #         pred = out.argmax(dim=1)
-        #         error_rates = []
-        #
-        #         for c in range(model.output_dim):
-        #             mask = (data.y == c) & data.val_mask
-        #             if mask.sum() > 0:
-        #                 error_rate = 1.0 - (pred[mask] == c).float().mean()
-        #                 error_rates.append(error_rate.item())
-        #             else:
-        #                 error_rates.append(0.5)  # 默认值
-        #
-        #         # 更新类别权重
-        #         model.update_class_weights(error_rates)
 
         # 评估验证集性能
         model.eval()

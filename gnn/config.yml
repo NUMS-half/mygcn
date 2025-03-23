@@ -2,7 +2,7 @@
 
 # 训练参数
 training:
-  epoch_num: 1500                # 训练的总轮数
+  epoch_num: 1000                # 训练的总轮数
   patience: 120                  # 早停耐心值，连续多少轮无改进后停止训练
   print_interval: 40             # 打印训练信息的间隔轮数
   enable_early_stopping: true    # 是否启用早停机制
@@ -16,14 +16,14 @@ model:
 # 优化器配置
 optimizer:
   type: "AdamW"                  # 优化器类型
-  lr: 0.005                      # 初始学习率
-  weight_decay: 2.0e-4           # 权重衰减系数，用于L2正则化
+  lr: 0.003                      # 初始学习率
+  weight_decay: 5.0e-4           # 权重衰减系数，用于L2正则化
 
 # 学习率调度器
 scheduler:
   type: "OneCycleLR"             # 学习率调度器类型
-  max_lr: 0.015                   # 最大学习率
-  pct_start: 0.25                 # 学习率上升阶段占总训练的比例
+  max_lr: 0.02                   # 最大学习率
+  pct_start: 0.2                 # 学习率上升阶段占总训练的比例
   anneal_strategy: "cos"         # 学习率下降策略，可选"cos"或"linear"
   div_factor: 20                 # 初始学习率与最大学习率的比值
   final_div_factor: 100          # 最终学习率与初始学习率的比值
@@ -31,11 +31,11 @@ scheduler:
 # 类别权重计算
 class_weights:
   beta: 0.9999                  # 计算类别权重的beta参数，控制平衡度
-  cb_adjustment: 2.0             # 类别平衡调整系数，增大会使权重更极端
+  cb_adjustment: 3.0             # 类别平衡调整系数，增大会使权重更极端
 
 # 损失函数配置
 loss:
-  focal_gamma: 2.0               # Focal Loss的gamma参数，控制难例学习的强度
+  focal_gamma: 2.5               # Focal Loss的gamma参数，控制难例学习的强度
   label_smoothing: 0.2           # 标签平滑系数，防止过拟合
   loss_balance: 0.5              # 混合损失中各损失函数的平衡权重
   enable_r_cam: false            # 是否启用 R-CAM（强调/忽略损失）

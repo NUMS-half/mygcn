@@ -1,12 +1,12 @@
+import os
+import yaml
 import torch
 import random
-import numpy as np
-import os
 import logging
-import yaml
+import numpy as np
 import torch.optim as optim
-from torch.optim import lr_scheduler
 from datetime import datetime
+from torch.optim import lr_scheduler
 
 # 全局日志配置
 LOG_LEVEL = logging.INFO
@@ -107,8 +107,8 @@ def load_config(config_path=CONFIG_PATH):
     logger = get_logger("Config")
 
     if not os.path.exists(config_path):
-        logger.warning(f"配置文件 {config_path} 不存在，将使用默认配置")
-        return get_default_config()
+        logger.warning(f"配置文件 {config_path} 不存在")
+        return None
 
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -118,69 +118,7 @@ def load_config(config_path=CONFIG_PATH):
         return config
     except Exception as e:
         logger.error(f"加载配置文件失败: {e}")
-        logger.info("将使用默认配置")
-        return get_default_config()
-
-
-def get_default_config():
-    """
-    返回默认训练配置
-
-    Returns:
-        dict: 默认配置字典
-    """
-    return {
-        "training": {
-            "epoch_num": 1500,
-            "patience": 100,
-            "print_interval": 30,
-            "enable_early_stopping": True
-        },
-        "model": {
-            "type": "HAN",
-            "hidden_dim": 128,
-            "output_dim": 6
-        },
-        "optimizer": {
-            "type": "AdamW",
-            "lr": 0.005,
-            "weight_decay": 1e-4
-        },
-        "scheduler": {
-            "type": "OneCycleLR",
-            "max_lr": 0.01,
-            "pct_start": 0.2,
-            "anneal_strategy": "cos",
-            "div_factor": 20,
-            "final_div_factor": 100
-        },
-        "class_weights": {
-            "beta": 0.9999,
-            "cb_adjustment": 2.0
-        },
-        "loss": {
-            "focal_gamma": 3.0,
-            "label_smoothing": 0.2,
-            "loss_balance": 0.7,
-            "lp_weight": 0.1,
-            "ln_weight": 0.1,
-            "enable_r_cam": False
-        },
-        "gradient": {
-            "clip_norm": 1.5
-        },
-        "emphasis_ignore_loss": {
-            "similarity_threshold": 0.7,
-            "max_pairs": 100
-        },
-        "paths": {
-            "model_dir": "../output/model",
-            "log_dir": "../logs"
-        },
-        "evaluation": {
-            "visualization": True
-        }
-    }
+        return None
 
 
 def save_config(config, config_path=CONFIG_PATH):
@@ -234,7 +172,7 @@ def get_model(config, num_features, device):
             model = HAN(num_features, hidden_dim=hidden_dim, output_dim=output_dim)
             logger.info(f"创建HAN模型: hidden_dim={hidden_dim}, output_dim={output_dim}")
         except ImportError:
-            logger.error("无法导入HAN模型，请确保gcn.py文件存在")
+            logger.error("无法导入HAN模型，请确保han.py文件存在")
             raise
     else:
         logger.error(f"不支持的模型类型: {model_type}")
