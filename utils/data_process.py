@@ -149,7 +149,6 @@ class GraphGenerator:
 
 
     def build_knowledge_graph(self):
-        set_seed()
         graph = nx.Graph()
 
         # 创建映射
@@ -534,7 +533,6 @@ class GraphGenerator:
         """数据集处理步骤"""
         self.logger.info(f"{'=' * 20} 处理并划分集数据 {'=' * 20}")
 
-        set_seed()
         self.generate_triples()  # 生成三元组
         # self.save_triples_to_dir()  # 保存三元组(可选)
         graph = self.build_knowledge_graph()  # 构建知识图谱
@@ -546,7 +544,6 @@ class GraphGenerator:
         try:
             self.logger.info(f"{'=' * 20} 开始处理数据集 {'=' * 20}")
 
-            set_seed(3407)
             self.load_data()  # 加载数据
             self.initialize_encoding()  # 初始化编码
             self.save_encoding_info()  # 保存编码信息
@@ -566,4 +563,5 @@ def main():
 
 
 if __name__ == "__main__":
+    set_seed(42)
     main()

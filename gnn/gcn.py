@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, RGCNConv, GATConv
+from gnn.layer import RGCNConv
+# from torch_geometric.nn import GCNConv, GATConv, RGCNConv
 
 
 # 1. Base GCNConv - 2 layers
@@ -146,7 +147,7 @@ from torch_geometric.nn import GCNConv, RGCNConv, GATConv
 
 
 class RGCN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, dropout=0.4, edge_dropout=0.05):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, num_bases=2, dropout=0.4, edge_dropout=0.05):
         super(RGCN, self).__init__()
         # num_relations：表示图中不同关系的数量
 
@@ -155,6 +156,7 @@ class RGCN(torch.nn.Module):
             in_channels=input_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
+            # num_bases=num_bases,
             # R-GCN 会默认添加自环
             aggr='max'  # 聚合方法：mean, add, max，目前性能好的组合：max + add / mean + add
         )
@@ -165,6 +167,7 @@ class RGCN(torch.nn.Module):
             in_channels=hidden_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
+            # num_bases=num_bases,
             aggr='add'
         )
         self.ln2 = LayerNorm(hidden_dim)
@@ -211,7 +214,7 @@ class RGCN(torch.nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # 分类头进行分类
-        x = self.classifier(x)
+        x = self.classifier(x)  # 训练时间 ↑1.625倍（91->56），F1 ↑6.2%，acc ↑5%，pre ↑6%，recall ↑6.4%
 
         return F.log_softmax(x, dim=1)
 

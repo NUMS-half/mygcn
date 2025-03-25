@@ -3,34 +3,34 @@
 # 训练参数
 training:
   epoch_num: 1000                # 训练的总轮数
-  patience: 120                  # 早停耐心值，连续多少轮无改进后停止训练
+  patience: 80                  # 早停耐心值，连续多少轮无改进后停止训练
   print_interval: 40             # 打印训练信息的间隔轮数
   enable_early_stopping: true    # 是否启用早停机制
 
 # 模型配置
 model:
   type: "RGCN"                   # 模型类型，可选 "RGCN" "HAN"
-  hidden_dim: 128                # 隐藏层的维度
+  hidden_dim: 256                # 隐藏层的维度
   output_dim: 6                  # 输出层的维度（类别数量）
 
 # 优化器配置
 optimizer:
   type: "AdamW"                  # 优化器类型
-  lr: 0.003                      # 初始学习率
+  lr: 0.001                      # 初始学习率
   weight_decay: 5.0e-4           # 权重衰减系数，用于L2正则化
 
 # 学习率调度器
 scheduler:
   type: "OneCycleLR"             # 学习率调度器类型
-  max_lr: 0.02                   # 最大学习率
-  pct_start: 0.2                 # 学习率上升阶段占总训练的比例
-  anneal_strategy: "cos"         # 学习率下降策略，可选"cos"或"linear"
-  div_factor: 20                 # 初始学习率与最大学习率的比值
-  final_div_factor: 100          # 最终学习率与初始学习率的比值
+  max_lr: 0.025                  # 最大学习率
+  pct_start: 0.15                 # 学习率上升阶段占总训练的比例
+  anneal_strategy: "cos"         # 学习率下降策略，"cos"或"linear"
+  div_factor: 20                 # 决定 init_lr = max_lr / div_factor
+  final_div_factor: 100          # 决定 min_lr = init_lr / final_div_factor
 
 # 类别权重计算
 class_weights:
-  beta: 0.9999                  # 计算类别权重的beta参数，控制平衡度
+  beta: 0.9999                   # 计算类别权重的beta参数，控制平衡度
   cb_adjustment: 3.0             # 类别平衡调整系数，增大会使权重更极端
 
 # 损失函数配置
