@@ -563,5 +563,5 @@ def main():
 
 
 if __name__ == "__main__":
-    set_seed(42)
+    set_seed(45)
     main()

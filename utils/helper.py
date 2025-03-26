@@ -157,20 +157,22 @@ def get_model(config, num_features, device):
     model_type = model_config["type"]
     hidden_dim = model_config["hidden_dim"]
     output_dim = model_config["output_dim"]
+    dropout = model_config["dropout"]
+    edge_dropout = model_config["edge_dropout"]
 
     if model_type == "RGCN":
         try:
             from gcn import RGCN
-            model = RGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim)
-            logger.info(f"创建RGCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}")
+            model = RGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"创建RGCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
         except ImportError:
             logger.error("无法导入RGCN模型，请确保gcn.py文件存在")
             raise
     elif model_type == "HAN":
         try:
             from han import HAN
-            model = HAN(num_features, hidden_dim=hidden_dim, output_dim=output_dim)
-            logger.info(f"创建HAN模型: hidden_dim={hidden_dim}, output_dim={output_dim}")
+            model = HAN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"创建HAN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
         except ImportError:
             logger.error("无法导入HAN模型，请确保han.py文件存在")
             raise
@@ -243,7 +245,20 @@ def get_scheduler(config, optimizer, epoch_num):
             final_div_factor=scheduler_config["final_div_factor"]
         )
         logger.info(
-            f"创建OneCycleLR调度器: max_lr={scheduler_config['max_lr']}, pct_start={scheduler_config['pct_start']}")
+            f"创建OneCycleLR调度器: max_lr={scheduler_config['max_lr']}, pct_start={scheduler_config['pct_start']}, "
+            f"total_steps={epoch_num}, strategy={scheduler_config['anneal_strategy']}, div={scheduler_config['div_factor']}, final_div={scheduler_config['final_div_factor']}")
+    elif scheduler_type == "ReduceLROnPlateau":
+        scheduler = lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=scheduler_config.get("mode", "max"),          # 默认监控F1分数提高
+            factor=scheduler_config.get("factor", 0.5),        # 学习率减少因子
+            patience=scheduler_config.get("patience", 10),     # 等待多少个epoch无改善后降低学习率
+            min_lr=scheduler_config.get("min_lr", 1e-6)       # 最小学习率
+        )
+        logger.info(
+            f"创建ReduceLROnPlateau调度器: mode={scheduler_config.get('mode', 'max')}, "
+            f"factor={scheduler_config.get('factor', 0.5)}, patience={scheduler_config.get('patience', 10)}, "
+            f"min_lr={scheduler_config.get('min_lr', 1e-6)}")
     else:
         logger.error(f"不支持的调度器类型: {scheduler_type}")
         raise ValueError(f"不支持的调度器类型: {scheduler_type}")

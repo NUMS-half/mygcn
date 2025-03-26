@@ -22,6 +22,8 @@ logger.info(f"current training device: {device}")
 
 # 全局变量，缓存图谱数据
 _cached_data = None
+
+
 def load_data():
     """加载图谱数据（懒加载）"""
     global _cached_data
@@ -243,6 +245,7 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
 
     return Lp, Ln, num_lp_pairs, num_ln_pairs
 
+
 def calculate_class_weights(class_counts, beta=0.9999, adjustment=2.0):
     """
     计算优化的类别权重
@@ -325,6 +328,7 @@ def train():
     val_recalls = []
     val_f1s = []
     epochs = []
+    learning_rates = []
 
     # 设置混合损失参数
     focal_gamma = config["loss"]["focal_gamma"]
@@ -340,6 +344,9 @@ def train():
 
     # 梯度裁剪参数
     clip_norm = config["gradient"]["clip_norm"]
+
+    # 可视化参数
+    visualize = config["evaluation"]["visualization"]
 
     for epoch in range(epoch_num):
         model.train()
@@ -375,8 +382,7 @@ def train():
             # 动态调整损失
             if num_lp_pairs > 0 and num_ln_pairs > 0:
                 # 有效对数足够时才应用损失
-                # loss = main_loss + lp_weight * Lp + ln_weight * Ln
-                loss = main_loss + Lp + Ln
+                loss = main_loss + lp_weight * Lp + ln_weight * Ln
             else:
                 # 否则只使用主损失
                 loss = main_loss
@@ -391,6 +397,8 @@ def train():
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
 
         optimizer.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        learning_rates.append(current_lr)
 
         # 评估验证集性能
         model.eval()
@@ -429,7 +437,7 @@ def train():
         epochs.append(epoch)
 
         # 更新学习率
-        scheduler.step()
+        scheduler.step(val_loss)
 
         # 每interval个epoch打印指标
         if epoch % print_interval == 0:
@@ -465,14 +473,15 @@ def train():
     logger.info(f"训练完成，总耗时: {formatted_time}")
 
     # 可视化训练过程
-    visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
-                            val_precisions, val_recalls, val_f1s)
+    if visualize:
+        visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
+                                   val_precisions, val_recalls, val_f1s, learning_rates)
 
     return best_model_path
 
 
 def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
-                               val_precisions, val_recalls, val_f1s):
+                               val_precisions, val_recalls, val_f1s, learning_rates):
     """可视化训练过程中的损失和多种评估指标变化"""
 
     # 创建输出目录
@@ -551,6 +560,20 @@ def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
     plt.tight_layout()
     plt.savefig(os.path.join(output_path, "training_summary.png"), dpi=300, bbox_inches='tight')
     logger.info(f"训练摘要可视化已保存至 {output_path}/training_summary.png")
+
+    # 学习率变化曲线
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, learning_rates, linewidth=2.5)
+    plt.title('Learning Rate Schedule in Training', fontsize=14)
+    plt.xlabel('Epochs', fontsize=12)
+    plt.ylabel('Learning Rate', fontsize=12)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.yscale('log')  # 使用对数刻度以更好地显示变化
+
+    # 保存学习率曲线
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path, "learning_rate.png"), dpi=300, bbox_inches='tight')
+    logger.info(f"学习率变化曲线已保存至 {output_path}/learning_rate.png")
 
     # 关闭图表以释放内存
     plt.close('all')
@@ -680,7 +703,7 @@ def test(model_path=None, config_path="config.yml"):
 
 if __name__ == "__main__":
     try:
-        set_seed(45)
+        set_seed(2345)  # 设置随机种子
         best_model_path = train()
         if best_model_path:
             test()

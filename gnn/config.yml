@@ -2,31 +2,42 @@
 
 # 训练参数
 training:
-  epoch_num: 1000                # 训练的总轮数
-  patience: 80                  # 早停耐心值，连续多少轮无改进后停止训练
-  print_interval: 40             # 打印训练信息的间隔轮数
-  enable_early_stopping: true    # 是否启用早停机制
+  epoch_num: 800                # 训练的总轮数
+  patience: 60                  # 早停耐心值，连续多少轮无改进后停止训练
+  print_interval: 30            # 打印训练信息的间隔轮数
+  enable_early_stopping: true   # 是否启用早停机制
 
 # 模型配置
 model:
   type: "RGCN"                   # 模型类型，可选 "RGCN" "HAN"
   hidden_dim: 256                # 隐藏层的维度
   output_dim: 6                  # 输出层的维度（类别数量）
+  dropout: 0.4                  # Dropout比率，防止过拟合
+  edge_dropout: 0.05             # 边Dropout比率，防止过拟合
 
 # 优化器配置
 optimizer:
   type: "AdamW"                  # 优化器类型
-  lr: 0.001                      # 初始学习率
-  weight_decay: 5.0e-4           # 权重衰减系数，用于L2正则化
+  lr: 0.003                      # 初始学习率(ReduceLROnPlateau调度器需较大初始学习率)
+  weight_decay: 0.001           # 权重衰减系数，用于L2正则化
 
 # 学习率调度器
 scheduler:
-  type: "OneCycleLR"             # 学习率调度器类型
+  type: "ReduceLROnPlateau"             # 学习率调度器类型
+
+  # OneCycleLR 调度器
   max_lr: 0.025                  # 最大学习率
   pct_start: 0.15                 # 学习率上升阶段占总训练的比例
   anneal_strategy: "cos"         # 学习率下降策略，"cos"或"linear"
   div_factor: 20                 # 决定 init_lr = max_lr / div_factor
   final_div_factor: 100          # 决定 min_lr = init_lr / final_div_factor
+
+  # ReduceLROnPlateau 调度器
+  mode: "min"           # 最小化验证损失
+  factor: 0.5           # 学习率减少因子
+  patience: 15          # 等待多少个epoch无改善后降低学习率
+  min_lr: 5.0e-5        # 最小学习率
+  cooldown: 3           # 冷却周期，多少个epoch不更新学习率
 
 # 类别权重计算
 class_weights:
@@ -35,7 +46,7 @@ class_weights:
 
 # 损失函数配置
 loss:
-  focal_gamma: 2.5               # Focal Loss的gamma参数，控制难例学习的强度
+  focal_gamma: 1.5               # Focal Loss的gamma参数，控制难例学习的强度
   label_smoothing: 0.2           # 标签平滑系数，防止过拟合
   loss_balance: 0.5              # 混合损失中各损失函数的平衡权重
   enable_r_cam: false            # 是否启用 R-CAM（强调/忽略损失）

@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 import torch.nn.functional as F
+from torch_geometric.utils import dropout_edge
+
 from gnn.layer import RGCNConv
 # from torch_geometric.nn import GCNConv, GATConv, RGCNConv
 
@@ -147,17 +149,14 @@ from gnn.layer import RGCNConv
 
 
 class RGCN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, num_bases=2, dropout=0.4, edge_dropout=0.05):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, dropout=0.4, edge_dropout=0.05):
         super(RGCN, self).__init__()
-        # num_relations：表示图中不同关系的数量
 
         # 第一层 R-GCN
         self.conv1 = RGCNConv(
             in_channels=input_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
-            # num_bases=num_bases,
-            # R-GCN 会默认添加自环
             aggr='max'  # 聚合方法：mean, add, max，目前性能好的组合：max + add / mean + add
         )
         self.ln1 = LayerNorm(hidden_dim)
@@ -167,7 +166,6 @@ class RGCN(torch.nn.Module):
             in_channels=hidden_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
-            # num_bases=num_bases,
             aggr='add'
         )
         self.ln2 = LayerNorm(hidden_dim)
@@ -192,7 +190,7 @@ class RGCN(torch.nn.Module):
         self.edge_dropout = edge_dropout
 
     def forward(self, x, edge_index, edge_type):
-        # 在训练时对边进行 dropout
+        # 在训练时对边进行 dropout, 增强模型泛化能力
         if self.training:
             # R-GCN 需要同时对 edge_index 和 edge_type 进行 dropout
             perm = torch.randperm(edge_index.size(1)) # 打乱边索引排列
@@ -211,14 +209,15 @@ class RGCN(torch.nn.Module):
         x = self.ln2(x)
         x = F.gelu(x)
         x = x + x1 * 0.5  # 轻度残差连接，保持特征流动性
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        # 保留更完整的信息到分类层，不进行 dropout
+        # x = F.dropout(x, p=self.dropout, training=self.training)
 
         # 分类头进行分类
         x = self.classifier(x)  # 训练时间 ↑1.625倍（91->56），F1 ↑6.2%，acc ↑5%，pre ↑6%，recall ↑6.4%
 
         return F.log_softmax(x, dim=1)
 
-    def get_node_reps(self, x, edge_index, edge_type, batch=None):
+    def get_node_reps(self, x, edge_index, edge_type):
         """
         获取节点的表示向量，用于计算Lp和Ln损失
         返回最终的节点特征表示（在分类前）
