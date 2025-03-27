@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 import torch.nn.functional as F
-from torch_geometric.utils import dropout_edge
 
 from gnn.layer import RGCNConv
 # from torch_geometric.nn import GCNConv, GATConv, RGCNConv
@@ -231,25 +230,24 @@ class RGCN(torch.nn.Module):
         返回:
             节点表示向量
         """
-        # 保持与forward相同的边dropout逻辑
         if self.training:
-            perm = torch.randperm(edge_index.size(1))
-            keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))]
+            # R-GCN 需要同时对 edge_index 和 edge_type 进行 dropout
+            perm = torch.randperm(edge_index.size(1))  # 打乱边索引排列
+            keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))]  # 打乱后，从前向后保留指定比例的边
             edge_index = edge_index[:, keep_mask]
             edge_type = edge_type[keep_mask]
 
-        # 第一层特征提取
+        # 第一层特征提取 - 使用边类型信息
         x = self.conv1(x, edge_index, edge_type)
         x = self.ln1(x)
         x = F.gelu(x)
         x1 = F.dropout(x, p=self.dropout, training=self.training)
 
-        # 第二层特征提取
+        # 第二层特征提取 - 使用边类型信息
         x = self.conv2(x1, edge_index, edge_type)
         x = self.ln2(x)
         x = F.gelu(x)
-        x = x + x1 * 0.5  # 轻度残差连接
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = x + x1 * 0.5  # 轻度残差连接，保持特征流动性
 
         # 返回最终的节点表示（在分类器之前）
         return x

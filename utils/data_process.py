@@ -189,31 +189,43 @@ class GraphGenerator:
         for u, v, relation_type in edges_to_add:
             graph.add_edge(u, v, label=1, relation_type=relation_type)
 
+        for status_code in range(42):
+            node_edges = list(graph.edges(status_code))
+            self.logger.info(f"特征节点 {status_code} 有 {len(node_edges)} 条边")
+
         self.logger.info(f"已基于数据集构建知识图谱")
+
         return graph
 
     def save_graph_as_pt(self, graph, train_ratio, val_ratio, filename="knowledge_graph.pt"):
-        """
-        将构建的图保存为 PyTorch Geometric 格式，并按时间顺序生成训练/验证/测试掩码
-        非订单节点全部分配给训练集
+        """将构建的图保存为 PyTorch Geometric 格式，并按时间顺序生成训练/验证/测试掩码"""
+        # 1. 修改节点映射逻辑，确保特征节点保持原ID
+        node_mapping = {}
+        # 先映射特征节点(0-41)，确保这些节点保持原有ID
+        for i in range(42):
+            if i in graph.nodes():
+                node_mapping[i] = i
 
-        Args:
-            graph: NetworkX图
-            train_ratio: 训练集比例
-            val_ratio: 验证集比例
-            filename: 输出文件名
-        """
-        # 1. 确定性节点排序和映射
-        all_nodes = sorted(list(graph.nodes()), key=lambda x: str(x))
-        node_mapping = {node: idx for idx, node in enumerate(all_nodes)}
+        # 再处理其他节点
+        next_id = 42
+        for node in graph.nodes():
+            if node not in node_mapping:
+                node_mapping[node] = next_id
+                next_id += 1
 
-        # 2. 收集节点属性（按排序顺序）
+        # 2. 创建按映射排序的节点列表（用于后续处理）
+        all_nodes = [None] * len(node_mapping)
+        for node, idx in node_mapping.items():
+            all_nodes[idx] = node
+
+        # 3. 收集节点属性
         behavior_labels = []
         time_attrs = []
         process_attrs = []
         node_types = []
 
-        for node in all_nodes:
+        for node_idx in range(len(all_nodes)):
+            node = all_nodes[node_idx]
             node_attr = graph.nodes[node]
             node_type = node_attr.get('type', '')
             node_types.append(node_type)
@@ -232,9 +244,10 @@ class GraphGenerator:
                 time_attrs.append('')
                 process_attrs.append('')
 
-        # 3. 构建节点特征矩阵（按排序顺序）
+        # 4. 构建节点特征矩阵
         node_features = []
-        for i, node in enumerate(all_nodes):
+        for i in range(len(all_nodes)):
+            node = all_nodes[i]
             features = [0.0] * 43
             if node_types[i] == 'order':
                 features[0] = 1.0  # 用户特征标识
@@ -247,34 +260,30 @@ class GraphGenerator:
                     pass
             node_features.append(features)
 
-        # 4. 确定性边处理
-        src_nodes = []
-        dst_nodes = []
+        # 5. 边处理 - 修复关键区域
+        edge_list = []
         edge_attrs = []
-        edge_types = []  # 收集边类型
+        edge_types = []
 
-        # 收集所有边并标准化源-目标关系
-        edges_data = []
+        # 遍历原始图中的所有边
         for u, v, data in graph.edges(data=True):
             src_idx = node_mapping[u]
             dst_idx = node_mapping[v]
             label = data.get('label', 1)
-            relation_type = data.get('relation_type', -1)  # 获取边的关系类型
-            edges_data.append((src_idx, dst_idx, label, relation_type))
+            relation_type = data.get('relation_type', -1)
 
-        # 确定性排序边
-        edges_data.sort()
-
-        # 分离源节点、目标节点、边属性和边类型
-        for src, dst, label, relation_type in edges_data:
-            src_nodes.append(src)
-            dst_nodes.append(dst)
+            # PyG 对于无向图采用双向存储
+            edge_list.append((src_idx, dst_idx))
             edge_attrs.append([float(label)])
-            edge_types.append(relation_type)  # 添加边的类型
+            edge_types.append(relation_type)
 
-        # 5. 创建确定性张量
-        if src_nodes:
-            edge_index = torch.tensor([src_nodes, dst_nodes], dtype=torch.long)
+            edge_list.append((dst_idx, src_idx))
+            edge_attrs.append([float(label)])
+            edge_types.append(relation_type)
+
+        # 6. 创建确定性张量
+        if edge_list:
+            edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
             edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
             edge_type = torch.tensor(edge_types, dtype=torch.long)
         else:
@@ -284,20 +293,20 @@ class GraphGenerator:
         node_features = torch.tensor(node_features, dtype=torch.float)
         behavior_labels = torch.tensor(behavior_labels, dtype=torch.long)
 
-        # 6. 按时间顺序生成掩码 - 关键修改部分
+        # 7. 按时间顺序生成掩码
         num_nodes = len(all_nodes)
-        order_indices = []  # 订单节点索引
-        non_order_indices = []  # 非订单节点索引
+        order_indices = []
+        non_order_indices = []
 
         # 收集订单节点和非订单节点
         for i, node_type in enumerate(node_types):
-            if node_type == 'order' and time_attrs[i]:  # 订单节点且有时间属性
-                order_indices.append((i, time_attrs[i]))  # (节点索引, 时间)
+            if node_type == 'order' and time_attrs[i]:
+                order_indices.append((i, time_attrs[i]))
             else:
-                non_order_indices.append(i)  # 非订单节点索引
+                non_order_indices.append(i)
 
         # 按时间排序订单节点
-        order_indices.sort(key=lambda x: x[1])  # 按时间属性排序
+        order_indices.sort(key=lambda x: x[1])
         sorted_order_indices = [idx for idx, _ in order_indices]
 
         # 按时间顺序划分订单节点
@@ -305,11 +314,11 @@ class GraphGenerator:
         train_order_size = int(order_count * train_ratio)
         val_order_size = int(order_count * val_ratio)
 
-        train_order_indices = sorted_order_indices[:train_order_size]  # 时间较早的作为训练集
-        val_order_indices = sorted_order_indices[train_order_size:train_order_size + val_order_size]  # 中间时段作为验证集
-        test_order_indices = sorted_order_indices[train_order_size + val_order_size:]  # 最新数据作为测试集
+        train_order_indices = sorted_order_indices[:train_order_size]
+        val_order_indices = sorted_order_indices[train_order_size:train_order_size + val_order_size]
+        test_order_indices = sorted_order_indices[train_order_size + val_order_size:]
 
-        # 7. 创建掩码
+        # 8. 创建掩码
         train_mask = torch.zeros(num_nodes, dtype=torch.bool)
         val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         test_mask = torch.zeros(num_nodes, dtype=torch.bool)
@@ -322,41 +331,33 @@ class GraphGenerator:
         # 将所有非订单节点分配给训练集
         train_mask[non_order_indices] = True
 
-        # 8. 创建PyG数据对象
+        # 9. 创建PyG数据对象
         data = Data(
             x=node_features,
             edge_index=edge_index,
             edge_attr=edge_attr,
-            edge_type=edge_type,  # 添加边类型属性
+            edge_type=edge_type,
             y=behavior_labels,
             train_mask=train_mask,
             val_mask=val_mask,
             test_mask=test_mask
         )
 
-        # 9. 保存元数据
+        # 10. 保存元数据
         time_dict = {i: attr for i, attr in enumerate(time_attrs) if attr}
         process_dict = {i: attr for i, attr in enumerate(process_attrs) if attr}
         data.time_attr = time_dict
         data.process_attr = process_dict
 
-        # 10. 保存为.pt文件
+        # 11. 保存为.pt文件
         os.makedirs(self.output_dir, exist_ok=True)
         file_path = os.path.join(self.output_dir, filename)
         torch.save(data, file_path)
 
-        # 11. 输出划分统计信息
-        order_train = sum(1 for i in train_order_indices)
-        order_val = len(val_order_indices)
-        order_test = len(test_order_indices)
-        non_order = len(non_order_indices)
-
+        # 12. 输出划分统计信息
         self.logger.info(f"图谱数据已保存为: {file_path}")
-        self.logger.info(f"数据集划分: 订单节点 - 训练:{order_train}, 验证:{order_val}, 测试:{order_test}")
-        self.logger.info(f"非订单节点(全部分配到训练集): {non_order}")
-        self.logger.debug(f"节点总数: {num_nodes}, 边数: {len(src_nodes)}")
-        self.logger.debug(f"edge_index shape: {edge_index.shape}")
-        self.logger.debug(f"edge_type shape: {edge_type.shape}")
+        self.logger.info(f"数据集划分: 订单节点 - 训练:{len(train_order_indices)}, 验证:{len(val_order_indices)}, 测试:{len(test_order_indices)}")
+        self.logger.info(f"非订单节点(全部分配到训练集): {len(non_order_indices)}")
 
     def visualize_graph(self, graph, save=False, output_path="../data/processed/knowledge_graph_advanced.png"):
         """

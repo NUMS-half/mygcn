@@ -4,7 +4,7 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score
 from utils.helper import load_config, get_model, get_optimizer, get_scheduler, set_seed, get_logger
 
 # 设置日志记录器
@@ -138,8 +138,7 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
         max_pairs: （优化）每个类别最大考虑的节点对数量，防止过度计算
     """
     # 1. # 得到 GNN 输出的节点表示矩阵 Hi, 只提取一次节点表示并归一化
-    Hi = model.get_node_reps(data.x, data.edge_index, data.edge_type,
-                             data.batch if hasattr(data, 'batch') else None)
+    Hi = model.get_node_reps(data.x, data.edge_index, data.edge_type)
 
     # 2. 只处理训练集节点
     mask = data.train_mask
@@ -314,8 +313,7 @@ def train():
 
     # 早停参数
     counter = 0
-    best_val_acc = 0.0
-    best_f1 = 0.0
+    best_macro_f1 = 0.0
     best_model_path = os.path.join(output_dir, "model")
     if not os.path.exists(best_model_path):
         os.makedirs(best_model_path)
@@ -326,7 +324,8 @@ def train():
     val_accuracies = []
     val_precisions = []
     val_recalls = []
-    val_f1s = []
+    val_macro_f1s = []
+    val_weighted_f1s = []
     epochs = []
     learning_rates = []
 
@@ -425,57 +424,58 @@ def train():
             val_acc = correct / len(y_true)
             val_precision = precision_score(y_true, y_pred, average='macro', zero_division=0)
             val_recall = recall_score(y_true, y_pred, average='macro', zero_division=0)
-            val_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+            val_macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+            val_weighted_f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
 
         # 记录指标
         train_losses.append(loss.item())
         val_losses.append(val_loss.item())
         val_accuracies.append(val_acc)
-        val_f1s.append(val_f1)
+        val_macro_f1s.append(val_macro_f1)
+        val_weighted_f1s.append(val_weighted_f1)
         val_precisions.append(val_precision)
         val_recalls.append(val_recall)
         epochs.append(epoch)
 
         # 更新学习率
-        scheduler.step(val_loss)
+        scheduler.step(val_loss.item())
 
         # 每interval个epoch打印指标
         if epoch % print_interval == 0:
             if enable_r_cam:
                 logger.info(
                     f"Epoch {epoch}: 【Loss】 Main: {main_loss.item():.4f}, Lp: {Lp.item():.4f}, Ln: {Ln.item():.4f}, Total: {loss.item():.4f} "
-                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}"
+                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, Macro-F1: {val_macro_f1:.4f}"
                 )
             else:
                 logger.info(
                     f"Epoch {epoch}: 【Loss】 Main: {main_loss.item():.4f}, Total: {loss.item():.4f} "
-                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}"
+                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, Macro-F1: {val_macro_f1:.4f}"
                 )
 
         # 使用F1分数作为早停标准
-        if val_f1 > best_f1:
-            best_f1 = val_f1
-            best_val_acc = val_acc
+        if val_macro_f1 > best_macro_f1:
+            best_macro_f1 = val_macro_f1
             torch.save(model.state_dict(), os.path.join(best_model_path, "best_model.pth"))
             counter = 0
-            logger.info(f"模型改进，当前最佳F1分数: {best_f1:.4f}, 验证准确率: {val_acc:.4f}")
+            logger.info(f"✅模型改进! 当前Epoch: {epoch}, 最佳Macro-F1: {best_macro_f1:.4f}, 验证准确率: {val_acc:.4f}")
         else:
             counter += 1
 
         # 早停检查
         if enable_early_stopping and counter >= patience:
-            logger.info(f"早停触发，停止训练! 最佳F1分数: {best_f1:.4f}, 验证准确率: {best_val_acc:.6f}")
+            logger.info(f"⚠️触发早停，停止训练! 当前最佳F1分数: {best_macro_f1:.4f}")
             break
 
     # 计算并输出总训练时间
     total_time = time.time() - start_time
-    formatted_time = time.strftime("%M:%S", time.gmtime(total_time))
-    logger.info(f"训练完成，总耗时: {formatted_time}")
+    formatted_time = time.strftime("%H:%M:%S", time.gmtime(total_time))
+    logger.info(f"⏱️训练完成，总耗时: {formatted_time}")
 
     # 可视化训练过程
     if visualize:
         visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
-                                   val_precisions, val_recalls, val_f1s, learning_rates)
+                                   val_precisions, val_recalls, val_macro_f1s, learning_rates)
 
     return best_model_path
 
@@ -621,7 +621,9 @@ def evaluate(model, split, data=None, config=None):
             results['accuracy'] = 0
             results['precision'] = 0
             results['recall'] = 0
-            results['f1'] = 0
+            results['f1-macro'] = 0
+            results['f1-weighted'] = 0
+            results['kappa'] = 0
             results['confusion_matrix'] = np.array([[0]])
             return results
 
@@ -633,7 +635,9 @@ def evaluate(model, split, data=None, config=None):
         results['accuracy'] = correct / len(y_true)
         results['precision'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
         results['recall'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
-        results['f1'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        results['f1-macro'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        results['f1-weighted'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+        results['kappa'] = cohen_kappa_score(y_true, y_pred)
         results['confusion_matrix'] = confusion_matrix(y_true, y_pred)
 
     return results
@@ -675,16 +679,27 @@ def test(model_path=None, config_path="config.yml"):
     test_results = evaluate(model, "test", data, config)
 
     # 输出测试结果
-    logger.info(f"{'=' * 15} 测试集评估结果 {'=' * 15}")
-    logger.info(f"准确率 (Accuracy): {test_results['accuracy']:.6f}")
-    logger.info(f"精确率 (Precision): {test_results['precision']:.6f}")
-    logger.info(f"召回率 (Recall): {test_results['recall']:.6f}")
-    logger.info(f"F1分数: {test_results['f1']:.6f}")
+    # 创建表格样式的结果输出
+    table_header = f"{'=' * 10} 测试集评估结果 {'=' * 10}"
+    table_divider = "+-------------+----------+"
+    table_format = "| {metric:<11} | {value:>8.6f} |"
+
+    logger.info(table_header)
+    logger.info(table_divider)
+    logger.info("| Metric      | Value    |")
+    logger.info(table_divider)
+    logger.info(table_format.format(metric="Accuracy", value=test_results['accuracy']))
+    logger.info(table_format.format(metric="Precision", value=test_results['precision']))
+    logger.info(table_format.format(metric="Recall", value=test_results['recall']))
+    logger.info(table_format.format(metric="Kappa-Score", value=test_results['kappa']))
+    logger.info(table_format.format(metric="Macro-F1", value=test_results['f1-macro']))
+    logger.info(table_format.format(metric="Weighted-F1", value=test_results['f1-weighted']))
+    logger.info(table_divider)
+
 
     # 输出混淆矩阵
     conf_matrix = test_results['confusion_matrix']
-    logger.info(f"混淆矩阵:")
-    logger.info(f"\n{conf_matrix}")
+    logger.info(f"Confusion Matrix:\n{conf_matrix}")
 
     # 计算每个类别的预测准确率
     logger.info(f"\n{'=' * 15} 各类别预测准确率 {'=' * 15}")

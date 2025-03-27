@@ -12,14 +12,14 @@ model:
   type: "RGCN"                   # 模型类型，可选 "RGCN" "HAN"
   hidden_dim: 256                # 隐藏层的维度
   output_dim: 6                  # 输出层的维度（类别数量）
-  dropout: 0.4                  # Dropout比率，防止过拟合
+  dropout: 0.3                  # Dropout比率，防止过拟合
   edge_dropout: 0.05             # 边Dropout比率，防止过拟合
 
 # 优化器配置
 optimizer:
   type: "AdamW"                  # 优化器类型
   lr: 0.003                      # 初始学习率(ReduceLROnPlateau调度器需较大初始学习率)
-  weight_decay: 0.001           # 权重衰减系数，用于L2正则化
+  weight_decay: 0.01           # 权重衰减系数，用于L2正则化
 
 # 学习率调度器
 scheduler:
@@ -37,12 +37,12 @@ scheduler:
   factor: 0.5           # 学习率减少因子
   patience: 15          # 等待多少个epoch无改善后降低学习率
   min_lr: 5.0e-5        # 最小学习率
-  cooldown: 3           # 冷却周期，多少个epoch不更新学习率
+  cooldown: 5           # 冷却周期，多少个epoch不更新学习率
 
 # 类别权重计算
 class_weights:
   beta: 0.9999                   # 计算类别权重的beta参数，控制平衡度
-  cb_adjustment: 3.0             # 类别平衡调整系数，增大会使权重更极端
+  cb_adjustment: 2.5             # 类别平衡调整系数，增大会使权重更极端
 
 # 损失函数配置
 loss:
@@ -50,8 +50,8 @@ loss:
   label_smoothing: 0.2           # 标签平滑系数，防止过拟合
   loss_balance: 0.5              # 混合损失中各损失函数的平衡权重
   enable_r_cam: false            # 是否启用 R-CAM（强调/忽略损失）
-  lp_weight: 0.3                 # 强调损失(Lp)的权重
-  ln_weight: 0.3                 # 忽略损失(Ln)的权重
+  lp_weight: 0.2                 # 强调损失(Lp)的权重
+  ln_weight: 0.2                 # 忽略损失(Ln)的权重
 
 # 梯度处理
 gradient:

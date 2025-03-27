@@ -20,7 +20,7 @@ LABELS_MAPPING = {
 }
 
 # 数据量设置
-DATA_SIZE = 30000
+DATA_SIZE = 25000
 
 # 维度标签配置
 # 1. 用户价值维度
