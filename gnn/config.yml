@@ -34,10 +34,10 @@ scheduler:
 
   # ReduceLROnPlateau 调度器
   mode: "min"           # 最小化验证损失
-  factor: 0.5           # 学习率减少因子
+  factor: 0.6          # 学习率减少因子
   patience: 15          # 等待多少个epoch无改善后降低学习率
   min_lr: 5.0e-5        # 最小学习率
-  cooldown: 5           # 冷却周期，多少个epoch不更新学习率
+  cooldown: 5           # 冷却周期
 
 # 类别权重计算
 class_weights:

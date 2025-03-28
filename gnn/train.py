@@ -4,8 +4,8 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score
 from utils.helper import load_config, get_model, get_optimizer, get_scheduler, set_seed, get_logger
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score
 
 # 设置日志记录器
 logger = get_logger("Train")
@@ -464,13 +464,13 @@ def train():
 
         # 早停检查
         if enable_early_stopping and counter >= patience:
-            logger.info(f"⚠️触发早停，停止训练! 当前最佳F1分数: {best_macro_f1:.4f}")
+            logger.info(f"⚠️触发早停，停止训练! 当前最佳验证Macro-F1分数: {best_macro_f1:.4f}")
             break
 
     # 计算并输出总训练时间
     total_time = time.time() - start_time
     formatted_time = time.strftime("%H:%M:%S", time.gmtime(total_time))
-    logger.info(f"⏱️训练完成，总耗时: {formatted_time}")
+    logger.info(f"⏱️训练完成，耗时: {formatted_time}")
 
     # 可视化训练过程
     if visualize:
@@ -642,7 +642,6 @@ def evaluate(model, split, data=None, config=None):
 
     return results
 
-
 def test(model_path=None, config_path="config.yml"):
     """测试模型
 
@@ -679,8 +678,20 @@ def test(model_path=None, config_path="config.yml"):
     test_results = evaluate(model, "test", data, config)
 
     # 输出测试结果
-    # 创建表格样式的结果输出
-    table_header = f"{'=' * 10} 测试集评估结果 {'=' * 10}"
+    print_metrics_table(test_results, logger)
+
+    return test_results
+
+def print_metrics_table(results, logger, title="测试集评估结果"):
+    """
+    以表格形式打印评估指标
+
+    Args:
+        results: 包含评估指标的字典
+        logger: 日志记录器
+        title: 表格标题
+    """
+    table_header = f"{'=' * 15} {title} {'=' * 15}"
     table_divider = "+-------------+----------+"
     table_format = "| {metric:<11} | {value:>8.6f} |"
 
@@ -688,17 +699,16 @@ def test(model_path=None, config_path="config.yml"):
     logger.info(table_divider)
     logger.info("| Metric      | Value    |")
     logger.info(table_divider)
-    logger.info(table_format.format(metric="Accuracy", value=test_results['accuracy']))
-    logger.info(table_format.format(metric="Precision", value=test_results['precision']))
-    logger.info(table_format.format(metric="Recall", value=test_results['recall']))
-    logger.info(table_format.format(metric="Kappa-Score", value=test_results['kappa']))
-    logger.info(table_format.format(metric="Macro-F1", value=test_results['f1-macro']))
-    logger.info(table_format.format(metric="Weighted-F1", value=test_results['f1-weighted']))
+    logger.info(table_format.format(metric="Accuracy", value=results['accuracy']))
+    logger.info(table_format.format(metric="Precision", value=results['precision']))
+    logger.info(table_format.format(metric="Recall", value=results['recall']))
+    logger.info(table_format.format(metric="Kappa-Score", value=results['kappa']))
+    logger.info(table_format.format(metric="Macro-F1", value=results['f1-macro']))
+    logger.info(table_format.format(metric="Weighted-F1", value=results['f1-weighted']))
     logger.info(table_divider)
 
-
     # 输出混淆矩阵
-    conf_matrix = test_results['confusion_matrix']
+    conf_matrix = results['confusion_matrix']
     logger.info(f"Confusion Matrix:\n{conf_matrix}")
 
     # 计算每个类别的预测准确率
@@ -712,9 +722,6 @@ def test(model_path=None, config_path="config.yml"):
             logger.info(f"类别 {i}: {class_accuracy * 100:.2f}% ({conf_matrix[i, i]}/{row_sum})")
         else:
             logger.info(f"类别 {i}: 无样本")
-
-    return test_results
-
 
 if __name__ == "__main__":
     try:

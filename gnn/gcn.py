@@ -2,112 +2,35 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 import torch.nn.functional as F
+from torch_geometric.utils import dropout_edge
 
 from gnn.layer import RGCNConv
-# from torch_geometric.nn import GCNConv, GATConv, RGCNConv
+from torch_geometric.nn import GCNConv
 
 
 # 1. Base GCNConv - 2 layers
-# class GCN(torch.nn.Module):
-#     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3, edge_dropout=0.1):
-#         super(GCN, self).__init__()
-#         self.conv1 = GCNConv(input_dim, hidden_dim)
-#         self.ln1 = LayerNorm(hidden_dim)
-#         self.conv2 = GCNConv(hidden_dim, output_dim)
-#         self.ln2 = LayerNorm(output_dim)
-#         self.dropout = dropout
-#         self.edge_dropout = edge_dropout
-#
-#     def forward(self, x, edge_index):
-#         # 对边进行 dropout
-#         edge_index, _ = dropout_edge(edge_index, p=self.edge_dropout, training=self.training)
-#         x = self.conv1(x, edge_index)
-#         x = self.ln1(x)
-#         x = F.relu(x)
-#         x = F.dropout(x, p=self.dropout, training=self.training)
-#         x = self.conv2(x, edge_index)
-#         x = self.ln2(x)
-#         return F.log_softmax(x, dim=1)
+class GCN(torch.nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3, edge_dropout=0.1):
+        super(GCN, self).__init__()
+        self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.ln1 = LayerNorm(hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, output_dim)
+        self.ln2 = LayerNorm(output_dim)
+        self.dropout = dropout
+        self.edge_dropout = edge_dropout
 
-# class GCN(torch.nn.Module):
-#     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3, edge_dropout=0.1):
-#         super(GCN, self).__init__()
-#         # 扩展隐藏层维度以增加模型容量
-#         mid_dim = hidden_dim * 2
-#
-#         # 第一层卷积
-#         self.conv1 = GCNConv(input_dim, hidden_dim)
-#         self.ln1 = nn.LayerNorm(hidden_dim)
-#
-#         # 添加中间层增强特征提取能力
-#         self.conv_mid = GCNConv(hidden_dim, mid_dim)
-#         self.ln_mid = nn.LayerNorm(mid_dim)
-#
-#         # 第二层卷积 (保持原有连接)
-#         self.conv2 = GCNConv(mid_dim, hidden_dim)
-#         self.ln2 = nn.LayerNorm(hidden_dim)
-#
-#         # 添加类别感知层 - 针对多分类问题
-#         self.class_attention = nn.Linear(hidden_dim, hidden_dim)
-#
-#         # 输出分类层
-#         self.classifier = nn.Linear(hidden_dim, output_dim)
-#         self.ln_out = nn.LayerNorm(output_dim)
-#
-#         # 修正残差连接投影维度
-#         self.shortcut1 = nn.Linear(input_dim, mid_dim)
-#         # 修改: 从hidden_dim → hidden_dim (不是从mid_dim → hidden_dim)
-#         self.shortcut2 = nn.Linear(hidden_dim, hidden_dim)
-#
-#         # Dropout参数
-#         self.dropout = dropout
-#         self.edge_dropout = edge_dropout
-#
-#     def forward(self, x, edge_index):
-#         # 原始输入保存用于残差连接
-#         identity = x
-#
-#         # 对边进行 dropout (仅在训练时)
-#         if self.training:
-#             edge_index, _ = dropout_edge(edge_index, p=self.edge_dropout)
-#
-#         # 第一层: 基础特征提取
-#         x = self.conv1(x, edge_index)
-#         x = self.ln1(x)
-#         x = F.gelu(x)  # 使用GELU激活改进非线性表达能力
-#
-#         # 保存中间结果用于后续残差连接 (形状是[batch_size, hidden_dim])
-#         mid_identity = x
-#         x = F.dropout(x, p=self.dropout, training=self.training)
-#
-#         # 中间层: 增强特征表达
-#         x = self.conv_mid(x, edge_index)
-#         x = self.ln_mid(x)
-#
-#         # 添加第一个残差连接 (需要投影维度)
-#         x = x + self.shortcut1(identity)
-#         x = F.gelu(x)
-#         x = F.dropout(x, p=self.dropout, training=self.training)
-#
-#         # 第二层: 特征整合
-#         x = self.conv2(x, edge_index)
-#         x = self.ln2(x)
-#
-#         # 添加第二个残差连接 - 这里mid_identity形状是[batch_size, hidden_dim]
-#         x = x + self.shortcut2(mid_identity)  # 现在形状匹配了
-#         x = F.gelu(x)
-#
-#         # 类别感知机制: 增强多分类能力
-#         attention = torch.sigmoid(self.class_attention(x))
-#         x = x * attention
-#         x = F.dropout(x, p=self.dropout, training=self.training)
-#
-#         # 最终分类层
-#         x = self.classifier(x)
-#         x = self.ln_out(x)
-#
-#         return F.log_softmax(x, dim=1)
-#
+    def forward(self, x, edge_index):
+        # 对边进行 dropout
+        edge_index, _ = dropout_edge(edge_index, p=self.edge_dropout, training=self.training)
+        x = self.conv1(x, edge_index)
+        x = self.ln1(x)
+        x = F.relu(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.conv2(x, edge_index)
+        x = self.ln2(x)
+        return F.log_softmax(x, dim=1)
+
+
 # class GCN(torch.nn.Module):
 #     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.3, edge_dropout=0.1):
 #         super(GCN, self).__init__()
