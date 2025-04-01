@@ -2,9 +2,9 @@ import os
 import time
 import torch
 import numpy as np
+from utils.helper import *
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from utils.helper import load_config, get_model, get_optimizer, get_scheduler, set_seed, get_logger
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score
 
 # 设置日志记录器
@@ -279,6 +279,7 @@ def train():
     # 记录开始时间
     start_time = time.time()
 
+    model_type = config["model"]["type"]
     epoch_num = config["training"]["epoch_num"]
     patience = config["training"]["patience"]
     print_interval = config["training"]["print_interval"]
@@ -354,7 +355,7 @@ def train():
         current_gamma = max(1.0, focal_gamma * (1 - epoch / epoch_num))
 
         # 前向传播
-        out = model(data.x, data.edge_index, data.edge_type)
+        out = get_model_out(model_type, model, data)
 
         # 使用混合损失函数计算主损失
         main_loss = hybrid_loss(
@@ -402,7 +403,7 @@ def train():
         # 评估验证集性能
         model.eval()
         with torch.no_grad():
-            out = model(data.x, data.edge_index, data.edge_type)
+            out = get_model_out(model_type, model, data)
 
             # 计算验证损失
             val_loss = hybrid_loss(
@@ -596,28 +597,29 @@ def evaluate(model, split, data=None, config=None):
     if config is None:
         config = load_config()
 
-    logger = get_logger("Evaluate")
+    val_logger = get_logger("Evaluate")
     model.eval()
     results = {}
 
     with torch.no_grad():
-        out = model(data.x, data.edge_index, data.edge_type)
+        out = get_model_out(config["model"]["type"], model, data)
+
         pred = out.argmax(dim=1)
 
         # 根据数据集类型选择正确的掩码
         if split == "val":
             mask = data.val_mask
-            logger.info("在验证集上评估模型...")
+            val_logger.info("在验证集上评估模型...")
         elif split == "test":
             mask = data.test_mask
-            logger.info("在测试集上评估模型...")
+            val_logger.info("在测试集上评估模型...")
         else:
             raise ValueError(f"不支持的数据集类型: {split}")
 
         # 获取预测结果和真实标签
         mask_indices = torch.where(mask)[0]
         if len(mask_indices) == 0:
-            logger.warning(f"在{split}集中没有标记为True的样本!")
+            val_logger.warning(f"在{split}集中没有标记为True的样本!")
             results['accuracy'] = 0
             results['precision'] = 0
             results['recall'] = 0
@@ -642,6 +644,7 @@ def evaluate(model, split, data=None, config=None):
 
     return results
 
+
 def test(model_path=None, config_path="config.yml"):
     """测试模型
 
@@ -651,9 +654,9 @@ def test(model_path=None, config_path="config.yml"):
     """
     # 加载配置
     config = load_config(config_path)
-    logger = get_logger("Test")
+    test_logger = get_logger("Test")
 
-    logger.info(f"{'=' * 15} 测试集进行评估 {'=' * 15}")
+    test_logger.info(f"{'=' * 15} 测试集进行评估 {'=' * 15}")
 
     # 加载测试数据
     data = preprocess_data(load_data())
@@ -669,9 +672,9 @@ def test(model_path=None, config_path="config.yml"):
     if os.path.exists(model_path):
         model.load_state_dict(
             torch.load(model_path, map_location=device, weights_only=True))
-        logger.info(f"成功加载模型权重: {model_path}")
+        test_logger.info(f"成功加载模型权重: {model_path}")
     else:
-        logger.error(f"模型权重文件不存在: {model_path}")
+        test_logger.error(f"模型权重文件不存在: {model_path}")
         return None
 
     # 评估模型
@@ -681,6 +684,7 @@ def test(model_path=None, config_path="config.yml"):
     print_metrics_table(test_results, logger)
 
     return test_results
+
 
 def print_metrics_table(results, logger, title="测试集评估结果"):
     """
@@ -723,16 +727,17 @@ def print_metrics_table(results, logger, title="测试集评估结果"):
         else:
             logger.info(f"类别 {i}: 无样本")
 
+
 if __name__ == "__main__":
     try:
         set_seed(2345)  # 设置随机种子
-        best_model_path = train()
+        best_model_path = train()  # 训练模型
         if best_model_path:
-            test()
+            test()  # 测试模型
         else:
             logger.error("训练失败，跳过测试")
     except Exception as e:
-        logger.error(f"发生错误: {e}")
+        logger.error(f"训练或测试过程发生错误: {e}")
         import traceback
 
         logger.error(traceback.format_exc())

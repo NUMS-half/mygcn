@@ -226,7 +226,7 @@ def determine_label_by_rules(features):
 
 def process_data():
     """
-    读取数据、预测 BEHAVIOR_LABEL 并保存
+    读取数据、预测 BEHAVIOR_LABEL 并保存，添加5%噪声
     """
     set_seed(43)
     df = pd.read_csv(INPUT_FILE, encoding="utf-8-sig")
@@ -238,18 +238,41 @@ def process_data():
         label = determine_label_by_rules(features)
         labels.append(label)
 
+    # 添加噪声
+    noise = 0.02
+    total_samples = len(labels)
+    noise_count = int(total_samples * noise)  # 计算噪声样本数
+    noise_indices = random.sample(range(total_samples), noise_count)  # 随机选择要添加噪声的样本索引
+
+    # 记录原始标签分布
+    original_distribution = pd.Series(labels).value_counts(normalize=True).sort_index() * 100
+
+    # 对选中样本添加噪声（改变标签）
+    for idx in noise_indices:
+        original_label = labels[idx]
+        # 从除原标签外的其他标签中随机选择一个
+        possible_labels = [l for l in range(6) if l != original_label]
+        labels[idx] = random.choice(possible_labels)
+
+    logger.info(f"已为{noise_count}个样本添加噪声（约占总样本的{noise * 100}%）")
+
     df["BEHAVIOR_LABEL"] = labels
 
     # 计算标签分布并打印
     label_counts = df["BEHAVIOR_LABEL"].value_counts(normalize=True).sort_index() * 100
+
+    # 打印原始分布和添加噪声后的分布
+    distribution_info = "\n".join([f"    标签 {label}: {LABELS_MAPPING[label]['name']} - {count:.1f}%"
+                                   for label, count in original_distribution.items()])
+    logger.info(f"原始标签分布:\n{distribution_info}")
+
     distribution_info = "\n".join([f"    标签 {label}: {LABELS_MAPPING[label]['name']} - {count:.1f}%"
                                    for label, count in label_counts.items()])
-
-    logger.info(f"生成的标签分布:\n{distribution_info}")
+    logger.info(f"添加噪声后的标签分布:\n{distribution_info}")
 
     # 保存带标签的数据
     df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
-    logger.info(f"已生成 {len(df)} 条带标签数据，保存至 {OUTPUT_FILE}")
+    logger.info(f"已生成 {len(df)} 条带标签数据（含{noise * 100}%噪声），保存至 {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

@@ -237,7 +237,170 @@ class RGCNConv(MessagePassing):
         # 执行稀疏矩阵乘法，根据self.aggr指定的方式聚合
         return spmm(adj_t, x, reduce=self.aggr)
 
-    def __repr__(self):
-        """返回层的字符串表示，用于打印模型结构"""
-        return (f'{self.__class__.__name__}({self.in_channels}, '
-                f'{self.out_channels}, num_relations={self.num_relations})')
+
+class CausalRGCNConv(MessagePassing):
+    """
+    内存优化的因果关系图卷积网络层
+
+    通过注意力机制动态调整不同关系类型的权重，增强模型对因果关系的建模能力。
+    针对大规模图进行内存优化设计。
+    """
+
+    def __init__(
+            self,
+            in_channels,
+            out_channels,
+            num_relations,
+            num_bases=None,
+            aggr='mean',
+            root_weight=True,
+            bias=True,
+            causal_attn=True,
+            **kwargs
+    ):
+        kwargs.setdefault('aggr', aggr)
+        super().__init__(node_dim=0, **kwargs)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.num_relations = num_relations
+        self.num_bases = num_bases
+        self.causal_attn = causal_attn
+
+        # 处理输入通道
+        self.in_channels_l = in_channels[0] if isinstance(in_channels, tuple) else in_channels
+
+        # 创建权重矩阵
+        if num_bases is not None and num_bases < num_relations:
+            self.weight = Parameter(torch.empty(num_bases, self.in_channels_l, out_channels))
+            self.comp = Parameter(torch.empty(num_relations, num_bases))
+        else:
+            self.weight = Parameter(torch.empty(num_relations, self.in_channels_l, out_channels))
+            self.register_parameter('comp', None)
+
+        # 自连接和偏置
+        self.root = Parameter(torch.empty(self.in_channels_l, out_channels)) if root_weight else None
+        self.bias = Parameter(torch.empty(out_channels)) if bias else None
+
+        # 因果注意力机制参数 - 精简设计
+        if causal_attn:
+            # 关系类型重要性权重
+            self.relation_attn = Parameter(torch.empty(num_relations, 1))
+            # 节点特征投影矩阵 - 使用小维度减少计算开销
+            self.attn_dim = min(8, self.in_channels_l)  # 降至较小维度
+            self.attn_proj = Parameter(torch.empty(self.in_channels_l, self.attn_dim))
+            self.attn_vec = Parameter(torch.empty(self.attn_dim * 2, 1))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        """初始化参数"""
+        super().reset_parameters()
+        glorot(self.weight)
+        glorot(self.comp)
+        glorot(self.root)
+        zeros(self.bias)
+
+        if self.causal_attn:
+            glorot(self.relation_attn)
+            if hasattr(self, 'attn_proj'):
+                glorot(self.attn_proj)
+                glorot(self.attn_vec)
+
+    def forward(self, x, edge_index, edge_type=None):
+        """
+        前向传播函数 - 内存优化版本
+        """
+        # 处理输入特征
+        x_l = x[0] if isinstance(x, tuple) else x
+        x_r = x[1] if isinstance(x, tuple) else x_l
+
+        # 处理离散特征
+        if x_l is None:
+            x_l = torch.arange(self.in_channels_l, device=self.weight.device)
+
+        # 处理边类型
+        if isinstance(edge_index, SparseTensor):
+            edge_type = edge_index.storage.value()
+        assert edge_type is not None
+
+        # 初始化输出
+        out = torch.zeros(x_r.size(0), self.out_channels, device=x_r.device)
+        size = (x_l.size(0), x_r.size(0))
+
+        # 处理权重
+        weight = self.weight
+        if self.num_bases is not None and self.comp is not None:
+            weight = (self.comp @ weight.view(self.num_bases, -1)).view(
+                self.num_relations, self.in_channels_l, self.out_channels)
+
+        # 常规处理路径 - 分关系类型处理
+        is_discrete = not torch.is_floating_point(x_l)
+
+        # 预计算节点特征投影 - 只计算一次提高效率
+        x_proj = None
+        if self.causal_attn and torch.is_floating_point(x_l):
+            x_proj = x_l @ self.attn_proj
+
+        for i in range(self.num_relations):
+            # 创建当前关系类型的边掩码
+            mask = edge_type == i
+            if not mask.any():
+                continue
+
+            # 获取当前关系的边子集
+            tmp = masked_edge_index(edge_index, mask)
+
+            # 计算边权重 - 针对当前关系类型的边子集计算
+            edge_weight = None
+            if self.causal_attn and isinstance(tmp, Tensor):
+                row, col = tmp
+
+                if torch.is_floating_point(x_l):
+                    # 获取源节点和目标节点的投影特征
+                    src_proj = x_proj[row]  # [num_edges, attn_dim]
+                    dst_proj = x_proj[col]  # [num_edges, attn_dim]
+
+                    # 拼接特征并计算注意力分数
+                    alpha = torch.cat([src_proj, dst_proj], dim=-1) @ self.attn_vec  # [num_edges, 1]
+
+                    # 添加关系特定权重 - 使用标量广播避免大张量
+                    rel_weight = self.relation_attn[i].item()  # 获取标量值
+                    alpha = alpha + rel_weight
+
+                    # 应用sigmoid激活函数得到边权重
+                    edge_weight = alpha.sigmoid().view(-1)
+
+            # 传播消息
+            if is_discrete:
+                h = self.propagate(tmp, x=weight[i, x_l], edge_weight=edge_weight, size=size)
+                out.add_(h)
+            else:
+                h = self.propagate(tmp, x=x_l, edge_weight=edge_weight, size=size)
+                out.add_(h @ weight[i])
+
+        # 处理自连接权重
+        if self.root is not None:
+            if not torch.is_floating_point(x_r):
+                out.add_(self.root[x_r])
+            else:
+                out.add_(x_r @ self.root)
+
+        # 添加偏置
+        if self.bias is not None:
+            out.add_(self.bias)
+
+        return out
+
+    def message(self, x_j, edge_weight=None):
+        """定义消息函数"""
+        # 如果有边权重，应用到消息上
+        if edge_weight is not None:
+            return x_j * edge_weight.view(-1, 1)
+        return x_j
+
+    def message_and_aggregate(self, adj_t, x):
+        """组合消息生成和聚合步骤"""
+        if isinstance(adj_t, SparseTensor):
+            adj_t = adj_t.set_value(None)
+        return spmm(adj_t, x, reduce=self.aggr)

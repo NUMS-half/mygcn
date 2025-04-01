@@ -1,9 +1,12 @@
-import subprocess
 import sys
+import subprocess
+from helper import get_logger
 
-# 按顺序执行三个脚本
+logger = get_logger("Data")
+
 def run_scripts():
-    # 定义要执行的脚本列表
+    logger.info("批量执行数据生成与预处理脚本...")
+    # 要执行的脚本列表
     scripts = [
         "data_generate.py",
         "label_generate.py",
@@ -11,10 +14,10 @@ def run_scripts():
     ]
 
     # 依次执行每个脚本
-    for script in scripts:
-        print(f"正在执行: {script}")
+    for i, script in enumerate(scripts):
+        logger.info(f"正在执行: {script} ({i+1}/{len(scripts)})")
         subprocess.run([sys.executable, script])
-        print(f"执行完成: {script}")
+        logger.info(f"执行完成: {script}")
 
 if __name__ == "__main__":
     run_scripts()

@@ -9,17 +9,17 @@ training:
 
 # 模型配置
 model:
-  type: "RGCN"                   # 模型类型，可选 "RGCN" "HAN"
+  type: "UserBehaviorGCN"        # 模型类型，可选 "UserBehaviorGCN" "GraphSAGE" "GCN" "GAT"
   hidden_dim: 256                # 隐藏层的维度
   output_dim: 6                  # 输出层的维度（类别数量）
-  dropout: 0.3                  # Dropout比率，防止过拟合
+  dropout: 0.3                   # Dropout比率，防止过拟合
   edge_dropout: 0.05             # 边Dropout比率，防止过拟合
 
 # 优化器配置
 optimizer:
   type: "AdamW"                  # 优化器类型
   lr: 0.003                      # 初始学习率(ReduceLROnPlateau调度器需较大初始学习率)
-  weight_decay: 0.01           # 权重衰减系数，用于L2正则化
+  weight_decay: 0.01             # 权重衰减系数，用于L2正则化
 
 # 学习率调度器
 scheduler:

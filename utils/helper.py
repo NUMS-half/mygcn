@@ -4,9 +4,23 @@ import torch
 import random
 import logging
 import numpy as np
+from gnn.models import *
 import torch.optim as optim
 from datetime import datetime
 from torch.optim import lr_scheduler
+
+__all__ = [
+    "setup_logging",
+    "get_logger",
+    "set_seed",
+    "load_config",
+    "save_config",
+    "get_model",
+    "get_model_out",
+    "get_optimizer",
+    "get_scheduler",
+    "get_config_value"
+]
 
 # 全局日志配置
 LOG_LEVEL = logging.INFO
@@ -160,27 +174,52 @@ def get_model(config, num_features, device):
     dropout = model_config["dropout"]
     edge_dropout = model_config["edge_dropout"]
 
-    if model_type == "RGCN":
-        try:
-            from gcn import RGCN
-            model = RGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
-            logger.info(f"创建RGCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
-        except ImportError:
-            logger.error("无法导入RGCN模型，请确保gcn.py文件存在")
-            raise
-    elif model_type == "HAN":
-        try:
-            from han import HAN
-            model = HAN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
-            logger.info(f"创建HAN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
-        except ImportError:
-            logger.error("无法导入HAN模型，请确保han.py文件存在")
-            raise
-    else:
-        logger.error(f"不支持的模型类型: {model_type}")
-        raise ValueError(f"不支持的模型类型: {model_type}")
-
+    try:
+        if model_type == "GCN":
+            model = GCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"创建GCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
+        elif model_type == "UserBehaviorGCN":
+            model = UserBehaviorGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"UserBehaviorGCN: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
+        elif model_type == "GAT":
+            model = GAT(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"创建GAT模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
+        elif model_type == "GraphSAGE":
+            model = GraphSAGE(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"创建GraphSAGE模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
+        else:
+          logger.error(f"不支持的模型类型: {model_type}")
+          raise ValueError(f"不支持的模型类型: {model_type}")
+    except ImportError:
+        logger.error(f"无法导入 {model_type} 模型，请确保 models.py 文件存在")
+        raise
     return model.to(device)
+
+def get_model_out(model_type, model, data):
+    """
+    根据配置获取模型输出维度
+
+    参数:
+        config: 配置字典
+    返回:
+        out: 模型输出
+    """
+
+    if model_type == "UserBehaviorGCN":
+        return model(data.x, data.edge_index, data.edge_type)
+        # return model(data.x, data.edge_index, data.edge_type, data.edge_attr)
+        # 包含causal_mask参数(如果存在)
+        # if hasattr(data, 'causal_mask'):
+        #     return model(data.x, data.edge_index, data.edge_type,
+        #                  data.edge_attr, data.causal_mask)
+        # else:
+        #     # 没有causal_mask时可以自动生成一个默认的
+        #     # 例如基于边类型生成简单因果掩码
+        #     causal_mask = (data.edge_type == 2).float()  # 假设类型0最重要
+        #     return model(data.x, data.edge_index, data.edge_type,
+        #                  data.edge_attr, causal_mask)
+    else:
+        return model(data.x, data.edge_index)
 
 
 def get_optimizer(config, model_parameters):
@@ -253,7 +292,7 @@ def get_scheduler(config, optimizer, epoch_num):
             mode=scheduler_config.get("mode", "max"),          # 默认监控F1分数提高
             factor=scheduler_config.get("factor", 0.5),        # 学习率减少因子
             patience=scheduler_config.get("patience", 10),     # 等待多少个epoch无改善后降低学习率
-            min_lr=scheduler_config.get("min_lr", 1e-6)       # 最小学习率
+            min_lr=scheduler_config.get("min_lr", 1e-6)        # 最小学习率
         )
         logger.info(
             f"创建ReduceLROnPlateau调度器: mode={scheduler_config.get('mode', 'max')}, "
