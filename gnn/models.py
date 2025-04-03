@@ -4,7 +4,7 @@ from torch.nn import LayerNorm
 import torch.nn.functional as F
 from torch_geometric.utils import dropout_edge
 
-from gnn.layer import CausalRGCNConv, ImprovedCausalRGCNConv
+from gnn.layers import *
 from torch_geometric.nn import GCNConv, GATConv, SAGEConv, RGCNConv
 
 __all__ = [
@@ -26,6 +26,7 @@ class UserBehaviorGCN(torch.nn.Module):
             in_channels=input_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
+            num_bases=2,
             aggr='max',  # 聚合方法：mean, add, max，目前性能好的组合：max + add / mean + add
             causal_strength=True,  # 启用因果强度预测
             sparsity=0.15  # 轻度稀疏性约束
@@ -38,6 +39,7 @@ class UserBehaviorGCN(torch.nn.Module):
             in_channels=hidden_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
+            num_bases=2,
             aggr='add',
             causal_strength=False,  # 不启用因果强度预测
             sparsity=0.15  # 轻度稀疏性约束
@@ -67,7 +69,7 @@ class UserBehaviorGCN(torch.nn.Module):
     def forward(self, x, edge_index, edge_type):
         # 在训练时对边进行 dropout, 增强模型泛化能力
         if self.training:
-            # R-GCN 需要同时对 edge_index 和 edge_type 进行 dropout
+            # 注意：R-GCN 需要同时对 edge_index 和 edge_type 进行 dropout
             perm = torch.randperm(edge_index.size(1)) # 打乱边索引排列
             keep_mask = perm[:int(edge_index.size(1) * (1 - self.edge_dropout))] # 打乱后，从前向后保留指定比例的边
             edge_index = edge_index[:, keep_mask]
