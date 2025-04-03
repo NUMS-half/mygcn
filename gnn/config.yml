@@ -3,8 +3,8 @@
 # 训练参数
 training:
   epoch_num: 800                # 训练的总轮数
-  patience: 60                  # 早停耐心值，连续多少轮无改进后停止训练
-  print_interval: 30            # 打印训练信息的间隔轮数
+  patience: 40                  # 早停耐心值，连续多少轮无改进后停止训练
+  print_interval: 20            # 打印训练信息的间隔轮数
   enable_early_stopping: true   # 是否启用早停机制
 
 # 模型配置
@@ -25,17 +25,17 @@ optimizer:
 scheduler:
   type: "ReduceLROnPlateau"             # 学习率调度器类型
 
-  # OneCycleLR 调度器
+  # OneCycleLR 调度器配置
   max_lr: 0.025                  # 最大学习率
-  pct_start: 0.15                 # 学习率上升阶段占总训练的比例
+  pct_start: 0.15                # 学习率上升阶段占总训练的比例
   anneal_strategy: "cos"         # 学习率下降策略，"cos"或"linear"
   div_factor: 20                 # 决定 init_lr = max_lr / div_factor
   final_div_factor: 100          # 决定 min_lr = init_lr / final_div_factor
 
-  # ReduceLROnPlateau 调度器
+  # ReduceLROnPlateau 调度器配置（更适合于早停机制）
   mode: "min"           # 最小化验证损失
-  factor: 0.6          # 学习率减少因子
-  patience: 15          # 等待多少个epoch无改善后降低学习率
+  factor: 0.75          # 学习率减少因子
+  patience: 5           # 等待多少个epoch无改善后降低学习率
   min_lr: 5.0e-5        # 最小学习率
   cooldown: 5           # 冷却周期
 
@@ -46,21 +46,19 @@ class_weights:
 
 # 损失函数配置
 loss:
-  focal_gamma: 1.5               # Focal Loss的gamma参数，控制难例学习的强度
+  focal_gamma: 2.0               # Focal Loss的gamma参数，控制难例学习的强度
   label_smoothing: 0.2           # 标签平滑系数，防止过拟合
   loss_balance: 0.5              # 混合损失中各损失函数的平衡权重
-  enable_r_cam: false            # 是否启用 R-CAM（强调/忽略损失）
-  lp_weight: 0.2                 # 强调损失(Lp)的权重
-  ln_weight: 0.2                 # 忽略损失(Ln)的权重
+  r_cam:
+    enable: false            # 是否启用 R-CAM（强调/忽略损失）
+    lp_weight: 0.5          # 强调损失(Lp)的权重
+    ln_weight: 0.5          # 忽略损失(Ln)的权重
+    similarity_threshold: 0.8      # 强调/忽略损失中的相似度阈值，论文为 0.9
+    max_pairs: 100                 # 每个类别最大考虑的节点对数量
 
 # 梯度处理
 gradient:
   clip_norm: 2                 # 梯度裁剪阈值，防止梯度爆炸
-
-# 强调/忽略损失特定配置
-emphasis_ignore_loss:
-  similarity_threshold: 0.5      # 强调/忽略损失中的相似度阈值
-  max_pairs: 100                 # 每个类别最大考虑的节点对数量
 
 # 路径配置
 paths:

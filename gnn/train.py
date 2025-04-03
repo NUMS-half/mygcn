@@ -35,6 +35,12 @@ def load_data():
         path = f"../data/processed/knowledge_graph.pt"
         logger.info(f"正在从 {path} 加载图谱数据")
         _cached_data = torch.load(path, weights_only=False)
+
+        # 检查边类型的实际数量
+        unique_edge_types = torch.unique(_cached_data.edge_type)
+        num_relations = unique_edge_types.max().item() + 1
+        logger.info(f"数据中的关系类型数量与分布: {num_relations}, {unique_edge_types.tolist()}")
+
         return _cached_data
     except Exception as e:
         logger.error(f"加载图谱数据时出错: {e}")
@@ -126,19 +132,39 @@ def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1
     return combined_loss.mean()
 
 
-def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_threshold=0.7, max_pairs=100):
+def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_threshold=0.9, max_pairs=100,
+                                             sample_classes=False, sample_nodes=True, use_cache=True,
+                                             feature_cache=None):
     """
-    优化版本的强调损失(Lp)和忽略损失(Ln)计算
+    高效版的强调损失(Lp)和忽略损失(Ln)计算
 
     参数:
         model: GNN模型
         data: 图数据
         out: 模型输出
-        similarity_threshold: 相似度阈值，默认0.7
-        max_pairs: （优化）每个类别最大考虑的节点对数量，防止过度计算
+        similarity_threshold: 相似度阈值，默认0.9
+        max_pairs: 每个类别最大考虑的节点对数量，防止过度计算
+        sample_classes: 是否采样部分类别，默认False
+        sample_nodes: 是否采样部分节点，默认True
+        use_cache: 是否使用特征缓存，默认False
+        feature_cache: 特征缓存对象，当use_cache=True时需提供
     """
-    # 1. # 得到 GNN 输出的节点表示矩阵 Hi, 只提取一次节点表示并归一化
-    Hi = model.get_node_reps(data.x, data.edge_index, data.edge_type)
+    device = data.x.device
+
+    # 0. 缓存特征表示（可选）
+    if use_cache and feature_cache is not None:
+        model_hash = hash(tuple(p.sum().item() for p in model.parameters()))
+        data_hash = hash(str(data.x.shape)) + hash(str(data.edge_index.shape))
+        cached_features = feature_cache.get(model_hash, data_hash)
+
+        if cached_features is not None:
+            Hi = cached_features
+        else:
+            Hi = model.get_node_reps(data.x, data.edge_index, data.edge_type)
+            feature_cache.put(model_hash, data_hash, Hi)
+    else:
+        # 1. 得到 GNN 输出的节点表示矩阵 Hi
+        Hi = model.get_node_reps(data.x, data.edge_index, data.edge_type)
 
     # 2. 只处理训练集节点
     mask = data.train_mask
@@ -146,7 +172,7 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
     labels = data.y[mask]
     predicted_labels = out[mask].argmax(dim=1)
 
-    # 3. （优化）提前归一化所有特征向量，减少重复计算
+    # 3. 提前归一化所有特征向量
     Hi_norm = F.normalize(Hi_train, p=2, dim=1)
 
     # 4. 计算预测正确的样本
@@ -155,21 +181,33 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
     # 获取类别数
     num_classes = out.size(1)
 
+    # 5. 类别采样（可选）
+    if sample_classes and num_classes > 3:
+        import random
+        classes_to_process = random.sample(range(num_classes), 3)
+    else:
+        classes_to_process = range(num_classes)
+
     # 初始化损失值和计数器
     Lp_losses = []
     Ln_losses = []
 
     # 对每个类别计算损失
-    for c in range(num_classes):
+    for c in classes_to_process:
         # 获取类别c的正确预测样本
         c_correct_mask = (labels == c) & is_correct
         if c_correct_mask.sum() == 0:
             continue  # 跳过没有正确预测的类别
 
         c_correct_indices = torch.where(c_correct_mask)[0]
+
+        # 6. 节点采样（可选）
+        if sample_nodes and len(c_correct_indices) > 50:
+            c_correct_indices = c_correct_indices[torch.randperm(len(c_correct_indices))[:50]]
+
         c_correct_features = Hi_norm[c_correct_indices]
 
-        # === 强调损失(Lp) - 减少与非c类错误分类的相似性 ===
+        # === 强调损失(Lp) - 向量化实现 ===
         non_c_incorrect_mask = (labels != c) & (~is_correct)
         if non_c_incorrect_mask.sum() > 0:
             non_c_incorrect_indices = torch.where(non_c_incorrect_mask)[0]
@@ -178,27 +216,32 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
             # 批量计算相似度矩阵
             sim_matrix = torch.mm(c_correct_features, non_c_incorrect_features.t())
 
-            # 找出高相似度对，但限制数量以提高效率
+            # 找出高相似度对
             high_sim_mask = sim_matrix > similarity_threshold
 
             if high_sim_mask.sum() > 0:
-                # 为每个正确分类的c类样本找高相似度的非c类错误样本
-                for i in range(len(c_correct_indices)):
-                    high_sim_indices = torch.where(high_sim_mask[i])[0]
+                # 向量化处理：获取所有高相似度对的索引
+                row_indices, col_indices = torch.where(high_sim_mask)
 
-                    if len(high_sim_indices) > 0:
-                        # 限制处理的对数
-                        high_sim_indices = high_sim_indices[:min(len(high_sim_indices), max_pairs)]
-                        target_indices = non_c_incorrect_indices[high_sim_indices]
+                # 按行(正确分类样本)分组
+                unique_rows = torch.unique(row_indices)
 
-                        # 直接计算与所有高相似度节点的平均相似度
-                        target_features = Hi_train[target_indices].mean(0)  # 平均特征
-                        source_features = Hi_train[c_correct_indices[i]]
+                for row_idx in unique_rows:
+                    # 找出当前样本的所有高相似度目标
+                    target_cols = col_indices[row_indices == row_idx]
 
-                        sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
-                        Lp_losses.append(-sim)  # 负相似度
+                    # 限制处理的对数
+                    if len(target_cols) > max_pairs:
+                        target_cols = target_cols[:max_pairs]
 
-        # === 忽略损失(Ln) - 增加与同c类错误分类的相似性 ===
+                    # 批量计算相似度
+                    target_features = non_c_incorrect_features[target_cols].mean(0)
+                    source_features = c_correct_features[row_idx]
+
+                    sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
+                    Lp_losses.append(-sim)  # 负相似度
+
+        # === 忽略损失(Ln) - 向量化实现 ===
         c_incorrect_mask = (labels == c) & (~is_correct)
         if c_incorrect_mask.sum() > 0:
             c_incorrect_indices = torch.where(c_incorrect_mask)[0]
@@ -211,24 +254,28 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
             high_sim_mask = sim_matrix > similarity_threshold
 
             if high_sim_mask.sum() > 0:
-                # 为每个正确分类的c类样本找高相似度的c类错误样本
-                for i in range(len(c_correct_indices)):
-                    high_sim_indices = torch.where(high_sim_mask[i])[0]
+                # 向量化处理：获取所有高相似度对的索引
+                row_indices, col_indices = torch.where(high_sim_mask)
 
-                    if len(high_sim_indices) > 0:
-                        # 限制处理的对数
-                        high_sim_indices = high_sim_indices[:min(len(high_sim_indices), max_pairs)]
-                        target_indices = c_incorrect_indices[high_sim_indices]
+                # 按行(正确分类样本)分组
+                unique_rows = torch.unique(row_indices)
 
-                        # 计算与所有高相似度节点的平均相似度
-                        target_features = Hi_train[target_indices].mean(0)  # 平均特征
-                        source_features = Hi_train[c_correct_indices[i]].detach()  # 注意这里使用detach()
+                for row_idx in unique_rows:
+                    # 找出当前样本的所有高相似度目标
+                    target_cols = col_indices[row_indices == row_idx]
 
-                        sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
-                        Ln_losses.append(sim)  # 正相似度
+                    # 限制处理的对数
+                    if len(target_cols) > max_pairs:
+                        target_cols = target_cols[:max_pairs]
+
+                    # 批量计算相似度
+                    target_features = c_incorrect_features[target_cols].mean(0)
+                    source_features = c_correct_features[row_idx].detach()  # 注意这里使用detach()
+
+                    sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
+                    Ln_losses.append(sim)  # 正相似度
 
     # 计算最终损失
-    device = data.x.device
     Lp = torch.tensor(0.0, device=device)
     Ln = torch.tensor(0.0, device=device)
 
@@ -243,7 +290,6 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
     num_ln_pairs = len(Ln_losses)
 
     return Lp, Ln, num_lp_pairs, num_ln_pairs
-
 
 def calculate_class_weights(class_counts, beta=0.9999, adjustment=2.0):
     """
@@ -336,11 +382,12 @@ def train():
     loss_balance = config["loss"]["loss_balance"]
 
     # 设置Lp和Ln的权重系数
-    lp_weight = config["loss"]["lp_weight"]
-    ln_weight = config["loss"]["ln_weight"]
-    enable_r_cam = config["loss"]["enable_r_cam"]
-    similarity_threshold = config["emphasis_ignore_loss"]["similarity_threshold"]
-    max_pairs = config["emphasis_ignore_loss"]["max_pairs"]
+    r_cam_config = config["loss"]["r_cam"]
+    enable_r_cam = r_cam_config["enable"]
+    lp_weight = r_cam_config["lp_weight"]
+    ln_weight = r_cam_config["ln_weight"]
+    similarity_threshold = r_cam_config["similarity_threshold"]
+    max_pairs = r_cam_config["max_pairs"]
 
     # 梯度裁剪参数
     clip_norm = config["gradient"]["clip_norm"]

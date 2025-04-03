@@ -190,8 +190,11 @@ class GraphGenerator:
             graph.add_edge(u, v, label=1, relation_type=relation_type)
 
         for status_code in range(42):
-            node_edges = list(graph.edges(status_code))
-            self.logger.info(f"特征节点 {status_code} 有 {len(node_edges)} 条边")
+            if status_code in graph.nodes():
+                node_edges = list(graph.edges(status_code))
+                self.logger.info(f"特征节点 {status_code} 有 {len(node_edges)} 条边")
+            else:
+                self.logger.info(f"特征节点 {status_code} 不存在于图中")
 
         self.logger.info(f"已基于数据集构建知识图谱")
 
@@ -214,7 +217,9 @@ class GraphGenerator:
                 next_id += 1
 
         # 2. 创建按映射排序的节点列表（用于后续处理）
-        all_nodes = [None] * len(node_mapping)
+        max_idx = max(node_mapping.values()) if node_mapping else 0
+        all_nodes = [None] * (max_idx + 1)
+
         for node, idx in node_mapping.items():
             all_nodes[idx] = node
 
@@ -226,6 +231,14 @@ class GraphGenerator:
 
         for node_idx in range(len(all_nodes)):
             node = all_nodes[node_idx]
+            if node is None:
+                # 对于不存在的节点，添加默认值
+                behavior_labels.append(-1)
+                time_attrs.append('')
+                process_attrs.append('')
+                node_types.append('')
+                continue
+
             node_attr = graph.nodes[node]
             node_type = node_attr.get('type', '')
             node_types.append(node_type)
@@ -249,15 +262,17 @@ class GraphGenerator:
         for i in range(len(all_nodes)):
             node = all_nodes[i]
             features = [0.0] * 43
-            if node_types[i] == 'order':
-                features[0] = 1.0  # 用户特征标识
-            else:
-                try:
-                    status_code = int(node)
-                    if 0 <= status_code < 42:
-                        features[status_code + 1] = 1.0
-                except (ValueError, TypeError):
-                    pass
+
+            if node is not None:
+                if node_types[i] == 'order':
+                    features[0] = 1.0  # 用户特征标识
+                else:
+                    try:
+                        status_code = int(node)
+                        if 0 <= status_code < 42:
+                            features[status_code + 1] = 1.0
+                    except (ValueError, TypeError):
+                        pass
             node_features.append(features)
 
         # 5. 边处理 - 修复关键区域
@@ -359,7 +374,7 @@ class GraphGenerator:
         self.logger.info(f"数据集划分: 订单节点 - 训练:{len(train_order_indices)}, 验证:{len(val_order_indices)}, 测试:{len(test_order_indices)}")
         self.logger.info(f"非订单节点(全部分配到训练集): {len(non_order_indices)}")
 
-    def visualize_graph(self, graph, save=False, output_path="../data/processed/knowledge_graph_advanced.png"):
+    def visualize_graph(self, graph, save=False, output_path="../data/processed/knowledge_graph.png"):
         """
         高级知识图谱可视化函数，支持多种节点类型和关系类型的区分显示
 
@@ -394,6 +409,12 @@ class GraphGenerator:
             0: '#E6194B',  # 红色
             1: '#3CB44B',  # 绿色
             2: '#FFA500',  # 橙色
+            3: '#4363D8',  # 蓝色
+            4: '#F58231',  # 浅橙色
+            5: '#911EB4',  # 紫色
+            6: '#46F0F0',  # 浅青色
+            7: '#F032E6',  # 浅紫色
+            8: '#BCF60C',  # 浅绿色
         }
 
         relation_styles = {
@@ -403,6 +424,9 @@ class GraphGenerator:
             3: 'dashdot',
             4: (0, (3, 1, 1, 1)),  # 自定义虚线模式
             5: (0, (5, 1)),  # 自定义虚线模式
+            6: (0, (1, 1)),  # 自定义虚线模式
+            7: (0, (2, 1)),  # 自定义虚线模式
+            8: (0, (1, 2)),  # 自定义虚线模式
             -1: 'solid'
         }
 
@@ -457,6 +481,7 @@ class GraphGenerator:
                                        edge_color=relation_colors[relation_type],
                                        style=relation_styles[relation_type],
                                        alpha=0.8,
+                                       arrows=True,
                                        connectionstyle='arc3,rad=0.1')  # 弯曲的边，避免重叠
 
         # 绘制节点标签
@@ -482,22 +507,41 @@ class GraphGenerator:
         relation_handles = []
         relation_labels = []
         relation_name_map = {
-            0: "关系类型 0 - 用户类型特征",
-            1: "关系类型 1 - 用户套餐特征",
-            2: "关系类型 2 - 用户行为特征"
+            0: "用户特征关系",
+            1: "用户套餐关系",
+            2: "用户行为关系",
+
+            # # 用户特征关系
+            # 0: "用户价值维度关系",
+            # 1: "用户信用维度关系",
+            # 2: "用户反馈维度关系",
+            #
+            # # 用户套餐关系
+            # 3: "套餐月租费关系",
+            # 4: "ARPU值关系",
+            #
+            # # 用户行为关系
+            # 5: "流量使用关系",
+            # 6: "语音超套费用关系",
+            # 7: "流量超套费用关系",
+            # 8: "MOU关系",
+
+            -1: "未知关系类型"  # 添加默认关系类型
         }
 
+        # 安全处理所有关系类型
         for rel_type in sorted(relation_types):
-            if rel_type in relation_colors:
-                relation_handles.append(plt.Line2D([0], [0], color=relation_colors[rel_type],
-                                                   linestyle=relation_styles[rel_type],
+            if rel_type in relation_colors and rel_type in relation_styles:
+                relation_handles.append(plt.Line2D([0], [0],
+                                                   color=relation_colors.get(rel_type, 'gray'),
+                                                   linestyle=relation_styles.get(rel_type, 'solid'),
                                                    lw=2))
                 relation_labels.append(relation_name_map.get(rel_type, f"关系类型 {rel_type}"))
 
         # 合并图例
         all_handles = node_handles + relation_handles
         all_labels = node_labels + relation_labels
-        plt.legend(all_handles, all_labels, loc='upper right', fontsize=16,
+        plt.legend(all_handles, all_labels, loc='upper right', fontsize=14,
                    fancybox=True, framealpha=0.9, edgecolor='gray')
 
         # 设置标题和背景

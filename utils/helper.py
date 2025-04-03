@@ -187,6 +187,9 @@ def get_model(config, num_features, device):
         elif model_type == "GraphSAGE":
             model = GraphSAGE(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
             logger.info(f"创建GraphSAGE模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
+        elif model_type == "RGCN":
+            model = RGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"创建RGCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
         else:
           logger.error(f"不支持的模型类型: {model_type}")
           raise ValueError(f"不支持的模型类型: {model_type}")
@@ -205,19 +208,9 @@ def get_model_out(model_type, model, data):
         out: 模型输出
     """
 
-    if model_type == "UserBehaviorGCN":
+    if model_type == "UserBehaviorGCN" or model_type == "RGCN":
         return model(data.x, data.edge_index, data.edge_type)
         # return model(data.x, data.edge_index, data.edge_type, data.edge_attr)
-        # 包含causal_mask参数(如果存在)
-        # if hasattr(data, 'causal_mask'):
-        #     return model(data.x, data.edge_index, data.edge_type,
-        #                  data.edge_attr, data.causal_mask)
-        # else:
-        #     # 没有causal_mask时可以自动生成一个默认的
-        #     # 例如基于边类型生成简单因果掩码
-        #     causal_mask = (data.edge_type == 2).float()  # 假设类型0最重要
-        #     return model(data.x, data.edge_index, data.edge_type,
-        #                  data.edge_attr, causal_mask)
     else:
         return model(data.x, data.edge_index)
 
