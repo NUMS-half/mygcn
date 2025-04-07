@@ -2,6 +2,8 @@ import os
 import time
 import torch
 import numpy as np
+
+from gnn.layers import ImprovedCausalRGCNConv
 from utils.helper import *
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -39,7 +41,7 @@ def load_data():
         # 检查边类型的实际数量
         unique_edge_types = torch.unique(_cached_data.edge_type)
         num_relations = unique_edge_types.max().item() + 1
-        logger.info(f"数据中的关系类型数量与分布: {num_relations}, {unique_edge_types.tolist()}")
+        logger.info(f"数据中的关系类型数量与分布: {num_relations}: {unique_edge_types.tolist()}")
 
         return _cached_data
     except Exception as e:
@@ -133,10 +135,9 @@ def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1
 
 
 def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_threshold=0.9, max_pairs=100,
-                                             sample_classes=False, sample_nodes=True, use_cache=True,
-                                             feature_cache=None):
+                                             use_cache=True, feature_cache=None, max_total_pairs=300):
     """
-    高效版的强调损失(Lp)和忽略损失(Ln)计算
+    高效版的强调损失(Lp)和忽略损失(Ln)计算，增加提前停止功能
 
     参数:
         model: GNN模型
@@ -145,9 +146,9 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
         similarity_threshold: 相似度阈值，默认0.9
         max_pairs: 每个类别最大考虑的节点对数量，防止过度计算
         sample_classes: 是否采样部分类别，默认False
-        sample_nodes: 是否采样部分节点，默认True
-        use_cache: 是否使用特征缓存，默认False
+        use_cache: 是否使用特征缓存，默认True
         feature_cache: 特征缓存对象，当use_cache=True时需提供
+        max_total_pairs: 收集的强调/忽略损失节点对的最大总数，达到后停止收集
     """
     device = data.x.device
 
@@ -181,19 +182,20 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
     # 获取类别数
     num_classes = out.size(1)
 
-    # 5. 类别采样（可选）
-    if sample_classes and num_classes > 3:
-        import random
-        classes_to_process = random.sample(range(num_classes), 3)
-    else:
-        classes_to_process = range(num_classes)
-
     # 初始化损失值和计数器
     Lp_losses = []
     Ln_losses = []
 
+    # 设置提前退出标志
+    lp_collection_complete = False
+    ln_collection_complete = False
+
     # 对每个类别计算损失
-    for c in classes_to_process:
+    for c in range(num_classes):
+        # 如果已收集足够的节点对，提前结束循环
+        if lp_collection_complete and ln_collection_complete:
+            break
+
         # 获取类别c的正确预测样本
         c_correct_mask = (labels == c) & is_correct
         if c_correct_mask.sum() == 0:
@@ -201,79 +203,99 @@ def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_thresh
 
         c_correct_indices = torch.where(c_correct_mask)[0]
 
-        # 6. 节点采样（可选）
-        if sample_nodes and len(c_correct_indices) > 50:
-            c_correct_indices = c_correct_indices[torch.randperm(len(c_correct_indices))[:50]]
-
         c_correct_features = Hi_norm[c_correct_indices]
 
         # === 强调损失(Lp) - 向量化实现 ===
-        non_c_incorrect_mask = (labels != c) & (~is_correct)
-        if non_c_incorrect_mask.sum() > 0:
-            non_c_incorrect_indices = torch.where(non_c_incorrect_mask)[0]
-            non_c_incorrect_features = Hi_norm[non_c_incorrect_indices]
+        # 只有在尚未收集足够的强调对时进行收集
+        if not lp_collection_complete:
+            non_c_incorrect_mask = (labels != c) & (~is_correct)
+            if non_c_incorrect_mask.sum() > 0:
+                non_c_incorrect_indices = torch.where(non_c_incorrect_mask)[0]
+                non_c_incorrect_features = Hi_norm[non_c_incorrect_indices]
 
-            # 批量计算相似度矩阵
-            sim_matrix = torch.mm(c_correct_features, non_c_incorrect_features.t())
+                # 批量计算相似度矩阵
+                sim_matrix = torch.mm(c_correct_features, non_c_incorrect_features.t())
 
-            # 找出高相似度对
-            high_sim_mask = sim_matrix > similarity_threshold
+                # 找出高相似度对
+                high_sim_mask = sim_matrix > similarity_threshold
 
-            if high_sim_mask.sum() > 0:
-                # 向量化处理：获取所有高相似度对的索引
-                row_indices, col_indices = torch.where(high_sim_mask)
+                if high_sim_mask.sum() > 0:
+                    # 向量化处理：获取所有高相似度对的索引
+                    row_indices, col_indices = torch.where(high_sim_mask)
 
-                # 按行(正确分类样本)分组
-                unique_rows = torch.unique(row_indices)
+                    # 按行(正确分类样本)分组
+                    unique_rows = torch.unique(row_indices)
 
-                for row_idx in unique_rows:
-                    # 找出当前样本的所有高相似度目标
-                    target_cols = col_indices[row_indices == row_idx]
+                    for row_idx in unique_rows:
+                        # 检查是否已达到目标对数量
+                        if len(Lp_losses) >= max_total_pairs:
+                            lp_collection_complete = True
+                            break
 
-                    # 限制处理的对数
-                    if len(target_cols) > max_pairs:
-                        target_cols = target_cols[:max_pairs]
+                        # 找出当前样本的所有高相似度目标
+                        target_cols = col_indices[row_indices == row_idx]
 
-                    # 批量计算相似度
-                    target_features = non_c_incorrect_features[target_cols].mean(0)
-                    source_features = c_correct_features[row_idx]
+                        # 限制处理的对数
+                        if len(target_cols) > max_pairs:
+                            target_cols = target_cols[:max_pairs]
 
-                    sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
-                    Lp_losses.append(-sim)  # 负相似度
+                        # 批量计算相似度
+                        target_features = non_c_incorrect_features[target_cols].mean(0)
+                        source_features = c_correct_features[row_idx]
+
+                        sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
+                        Lp_losses.append(-sim)  # 负相似度
+
+                        # 实时检查是否达到目标
+                        if len(Lp_losses) >= max_total_pairs:
+                            lp_collection_complete = True
+                            break
 
         # === 忽略损失(Ln) - 向量化实现 ===
-        c_incorrect_mask = (labels == c) & (~is_correct)
-        if c_incorrect_mask.sum() > 0:
-            c_incorrect_indices = torch.where(c_incorrect_mask)[0]
-            c_incorrect_features = Hi_norm[c_incorrect_indices]
+        # 只有在尚未收集足够的忽略对时进行收集
+        if not ln_collection_complete:
+            c_incorrect_mask = (labels == c) & (~is_correct)
+            if c_incorrect_mask.sum() > 0:
+                c_incorrect_indices = torch.where(c_incorrect_mask)[0]
+                c_incorrect_features = Hi_norm[c_incorrect_indices]
 
-            # 批量计算相似度矩阵
-            sim_matrix = torch.mm(c_correct_features, c_incorrect_features.t())
+                # 批量计算相似度矩阵
+                sim_matrix = torch.mm(c_correct_features, c_incorrect_features.t())
 
-            # 找出高相似度对
-            high_sim_mask = sim_matrix > similarity_threshold
+                # 找出高相似度对
+                high_sim_mask = sim_matrix > similarity_threshold
 
-            if high_sim_mask.sum() > 0:
-                # 向量化处理：获取所有高相似度对的索引
-                row_indices, col_indices = torch.where(high_sim_mask)
+                if high_sim_mask.sum() > 0:
+                    # 向量化处理：获取所有高相似度对的索引
+                    row_indices, col_indices = torch.where(high_sim_mask)
 
-                # 按行(正确分类样本)分组
-                unique_rows = torch.unique(row_indices)
+                    # 按行(正确分类样本)分组
+                    unique_rows = torch.unique(row_indices)
 
-                for row_idx in unique_rows:
-                    # 找出当前样本的所有高相似度目标
-                    target_cols = col_indices[row_indices == row_idx]
+                    for row_idx in unique_rows:
+                        # 检查是否已达到目标对数量
+                        if len(Ln_losses) >= max_total_pairs:
+                            ln_collection_complete = True
+                            break
 
-                    # 限制处理的对数
-                    if len(target_cols) > max_pairs:
-                        target_cols = target_cols[:max_pairs]
+                        # 找出当前样本的所有高相似度目标
+                        target_cols = col_indices[row_indices == row_idx]
 
-                    # 批量计算相似度
-                    target_features = c_incorrect_features[target_cols].mean(0)
-                    source_features = c_correct_features[row_idx].detach()  # 注意这里使用detach()
+                        # 限制处理的对数
+                        if len(target_cols) > max_pairs:
+                            target_cols = target_cols[:max_pairs]
 
-                    sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
-                    Ln_losses.append(sim)  # 正相似度
+                        # 批量计算相似度
+                        target_features = c_incorrect_features[target_cols].mean(0)
+                        source_features = c_correct_features[row_idx].detach()  # 注意这里使用detach()
+
+                        sim = F.cosine_similarity(target_features.unsqueeze(0), source_features.unsqueeze(0))
+                        Ln_losses.append(sim)  # 正相似度
+
+                        # 实时检查是否达到目标
+                        if len(Ln_losses) >= max_total_pairs:
+                            ln_collection_complete = True
+                            break
 
     # 计算最终损失
     Lp = torch.tensor(0.0, device=device)
@@ -381,6 +403,13 @@ def train():
     label_smoothing = config["loss"]["label_smoothing"]
     loss_balance = config["loss"]["loss_balance"]
 
+    # 设置因果正则化参数
+    causal_reg_config = config["loss"]["causal_reg"]
+    causal_reg_enable = causal_reg_config["enable"]
+    causal_reg_weight = causal_reg_config["weight"]
+    if causal_reg_enable:
+        logger.info("本次训练中已启用因果正则化损失计算")
+
     # 设置Lp和Ln的权重系数
     r_cam_config = config["loss"]["r_cam"]
     enable_r_cam = r_cam_config["enable"]
@@ -388,6 +417,9 @@ def train():
     ln_weight = r_cam_config["ln_weight"]
     similarity_threshold = r_cam_config["similarity_threshold"]
     max_pairs = r_cam_config["max_pairs"]
+    max_total_pairs = r_cam_config["max_total_pairs"]
+    if enable_r_cam:
+        logger.info(f"训练已启用强调损失(lp)和忽略损失(ln)计算： Lp权重={lp_weight}, Ln权重={ln_weight}, 相似度阈值={similarity_threshold}, 单点最大对数={max_pairs}, 最大总对数={max_total_pairs}")
 
     # 梯度裁剪参数
     clip_norm = config["gradient"]["clip_norm"]
@@ -414,12 +446,25 @@ def train():
             balance=loss_balance
         )
 
+        loss = main_loss
+        # 计算因果正则化损失
+        if causal_reg_enable and not enable_r_cam:
+            # 添加因果正则化损失
+            causal_reg_loss = 0.0
+            for module in model.modules():
+                if isinstance(module, ImprovedCausalRGCNConv):
+                    causal_reg_loss += module.causal_regularization_loss()
+
+            # 组合损失（从配置中获取权重或使用默认值）
+            loss = main_loss + causal_reg_weight * causal_reg_loss
+
         # 计算强调损失和忽略损失
-        if enable_r_cam:
+        if enable_r_cam and not causal_reg_enable:
             Lp, Ln, num_lp_pairs, num_ln_pairs = calculate_emphasis_ignore_loss_optimized(
                 model, data, out,
                 similarity_threshold=similarity_threshold,
-                max_pairs=max_pairs
+                max_pairs=max_pairs,
+                max_total_pairs=max_total_pairs
             )
 
             # 记录找到的准线节点对数量
@@ -430,11 +475,6 @@ def train():
             if num_lp_pairs > 0 and num_ln_pairs > 0:
                 # 有效对数足够时才应用损失
                 loss = main_loss + lp_weight * Lp + ln_weight * Ln
-            else:
-                # 否则只使用主损失
-                loss = main_loss
-        else:
-            loss = main_loss
 
         # 反向传播与优化
         optimizer.zero_grad()
@@ -627,6 +667,78 @@ def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
     plt.close('all')
 
 
+def analyze_interventions(model, data, config):
+    """分析特征节点(0-41)的因果影响"""
+    model.eval()
+    intervention_logger = get_logger("Intervention")
+
+    # 指定要分析的特征节点范围(0-41)
+    feature_nodes = list(range(42))  # 0-41号节点
+
+    intervention_logger.info(f"执行特征节点(0-41)因果干预分析")
+
+    # 执行初始的前向传播获取隐藏表示
+    hidden_features = {}
+    handles = []
+
+    def get_input_hook(name):
+        def hook(module, inputs, outputs):
+            hidden_features[name] = {
+                'x': inputs[0].detach(),
+                'edge_index': inputs[1],
+                'edge_type': inputs[2]
+            }
+
+        return hook
+
+    # 为每个ImprovedCausalRGCNConv层注册钩子
+    for name, module in model.named_modules():
+        if isinstance(module, ImprovedCausalRGCNConv):
+            handles.append(module.register_forward_hook(get_input_hook(name)))
+
+    # 执行一次前向传播
+    with torch.no_grad():
+        model(data.x, data.edge_index, data.edge_type)
+
+    # 移除钩子
+    for handle in handles:
+        handle.remove()
+
+    # 收集所有因果层的分析结果
+    causal_influence = {}
+    for name, module in model.named_modules():
+        if isinstance(module, ImprovedCausalRGCNConv) and name in hidden_features:
+            layer_results = {}
+
+            # 对每个特征节点单独进行干预分析
+            for node_id in feature_nodes:
+                with torch.no_grad():
+                    inputs = hidden_features[name]
+                    results = module.do_intervention(
+                        inputs['x'], inputs['edge_index'], inputs['edge_type'],
+                        target_nodes=[node_id]
+                    )
+
+                if 'effect' in results:
+                    # 计算该节点的整体因果影响力
+                    effect = results['effect']
+                    total_effect = torch.abs(effect).sum().item()
+                    layer_results[node_id] = total_effect
+
+            # 对节点影响力排序
+            sorted_nodes = sorted(layer_results.items(), key=lambda x: x[1], reverse=True)
+            top_nodes = sorted_nodes[:10]  # 选择影响最大的10个特征节点
+
+            intervention_logger.info(f"层 {name} 特征节点因果影响排名:")
+            for node, effect in top_nodes:
+                intervention_logger.info(f" 节点{node}: {effect:.2f}")
+
+            causal_influence[name] = {
+                'node_effects': dict(sorted_nodes)
+            }
+
+    return causal_influence
+
 def evaluate(model, split, data=None, config=None):
     """在验证集或测试集上评估模型，计算多种性能指标
 
@@ -726,6 +838,10 @@ def test(model_path=None, config_path="config.yml"):
 
     # 评估模型
     test_results = evaluate(model, "test", data, config)
+
+    # 添加因果干预分析
+    test_logger.info(f"{'=' * 15} 执行因果干预分析 {'=' * 15}")
+    analyze_interventions(model, data, config)
 
     # 输出测试结果
     print_metrics_table(test_results, logger)

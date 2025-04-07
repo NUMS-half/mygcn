@@ -41,8 +41,8 @@ class UserBehaviorGCN(torch.nn.Module):
             num_relations=num_relations,
             num_bases=2,
             aggr='add',
-            causal_strength=False,  # 不启用因果强度预测
-            sparsity=0.15  # 轻度稀疏性约束
+            causal_strength=True,  # 启用因果强度预测
+            sparsity=0.25  # 稀疏性约束递增
         )
         self.ln2 = LayerNorm(hidden_dim)
 

@@ -9,7 +9,7 @@ training:
 
 # 模型配置
 model:
-  type: "UserBehaviorGCN"        # 模型类型，可选 "UserBehaviorGCN" "GraphSAGE" "GCN" "GAT"
+  type: "UserBehaviorGCN"        # 模型类型，可选 "UserBehaviorGCN" "GraphSAGE" "GCN" "GAT" "RGCN"
   hidden_dim: 256                # 隐藏层的维度
   output_dim: 6                  # 输出层的维度（类别数量）
   dropout: 0.3                   # Dropout比率，防止过拟合
@@ -23,7 +23,7 @@ optimizer:
 
 # 学习率调度器
 scheduler:
-  type: "ReduceLROnPlateau"             # 学习率调度器类型
+  type: "ReduceLROnPlateau"      # 学习率调度器类型
 
   # OneCycleLR 调度器配置
   max_lr: 0.025                  # 最大学习率
@@ -49,16 +49,20 @@ loss:
   focal_gamma: 2.0               # Focal Loss的gamma参数，控制难例学习的强度
   label_smoothing: 0.2           # 标签平滑系数，防止过拟合
   loss_balance: 0.5              # 混合损失中各损失函数的平衡权重
+  causal_reg:
+    enable: false            # 是否启用因果正则化
+    weight: 0.01             # 因果正则化的权重
   r_cam:
     enable: false            # 是否启用 R-CAM（强调/忽略损失）
-    lp_weight: 0.5          # 强调损失(Lp)的权重
-    ln_weight: 0.5          # 忽略损失(Ln)的权重
-    similarity_threshold: 0.8      # 强调/忽略损失中的相似度阈值，论文为 0.9
-    max_pairs: 100                 # 每个类别最大考虑的节点对数量
+    lp_weight: 0.2          # 强调损失(Lp)的权重
+    ln_weight: 0.2          # 忽略损失(Ln)的权重
+    similarity_threshold: 0.95    # 强调/忽略损失中的相似度阈值，论文固定为 0.9
+    max_pairs: 100                # 创新点：限制每个正确分类样本最多与多少个目标节点形成对，防止单个高度活跃节点主导整个损失计算，类似于"每个人最多发言3分钟"的规则
+    max_total_pairs: 300          # 创新点：限制计算强调/忽略损失时，总共收集的节点对数量，目的是为了简化复杂度
 
 # 梯度处理
 gradient:
-  clip_norm: 2                 # 梯度裁剪阈值，防止梯度爆炸
+  clip_norm: 2               # 梯度裁剪阈值，防止梯度爆炸
 
 # 路径配置
 paths:
