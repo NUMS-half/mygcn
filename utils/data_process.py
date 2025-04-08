@@ -211,10 +211,10 @@ class GraphGenerator:
 
         # 再处理其他节点
         next_id = 42
-        for node in graph.nodes():
-            if node not in node_mapping:
-                node_mapping[node] = next_id
-                next_id += 1
+        other_nodes = sorted([node for node in graph.nodes() if node not in node_mapping])
+        for node in other_nodes:
+            node_mapping[node] = next_id
+            next_id += 1
 
         # 2. 创建按映射排序的节点列表（用于后续处理）
         max_idx = max(node_mapping.values()) if node_mapping else 0
@@ -275,30 +275,36 @@ class GraphGenerator:
                         pass
             node_features.append(features)
 
-        # 5. 边处理 - 修复关键区域
-        edge_list = []
-        edge_attrs = []
-        edge_types = []
-
+        # 5. 边处理
         # 遍历原始图中的所有边
-        for u, v, data in graph.edges(data=True):
+        all_edges = []
+        sorted_edges = sorted(graph.edges(data=True), key=lambda e: (node_mapping[e[0]], node_mapping[e[1]]))
+        for u, v, data in sorted_edges:
             src_idx = node_mapping[u]
             dst_idx = node_mapping[v]
             label = data.get('label', 1)
             relation_type = data.get('relation_type', -1)
 
-            # PyG 对于无向图采用双向存储
-            edge_list.append((src_idx, dst_idx))
-            edge_attrs.append([float(label)])
-            edge_types.append(relation_type)
+            # PyG 对于无向图采用双向存储边及其属性
+            all_edges.append((src_idx, dst_idx, float(label), relation_type))
+            all_edges.append((dst_idx, src_idx, float(label), relation_type))
 
-            edge_list.append((dst_idx, src_idx))
-            edge_attrs.append([float(label)])
-            edge_types.append(relation_type)
+        # 对所有边（包括反向边）进行排序
+        all_edges.sort()
 
-        # 6. 创建确定性张量
+        # 分离成edge_list, edge_attrs, edge_types
+        edge_list = [(e[0], e[1]) for e in all_edges]
+        edge_attrs = [[e[2]] for e in all_edges]
+        edge_types = [e[3] for e in all_edges]
+
+        # 创建确定性张量
         if edge_list:
-            edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
+            # 直接创建正确形状的张量
+            edge_index = torch.zeros((2, len(edge_list)), dtype=torch.long)
+            for i, (src, dst) in enumerate(edge_list):
+                edge_index[0, i] = src
+                edge_index[1, i] = dst
+
             edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
             edge_type = torch.tensor(edge_types, dtype=torch.long)
         else:
@@ -321,7 +327,7 @@ class GraphGenerator:
                 non_order_indices.append(i)
 
         # 按时间排序订单节点
-        order_indices.sort(key=lambda x: x[1])
+        order_indices.sort(key=lambda x: (x[1], x[0]))  # 添加节点索引作为第二排序键
         sorted_order_indices = [idx for idx, _ in order_indices]
 
         # 按时间顺序划分订单节点
@@ -507,24 +513,24 @@ class GraphGenerator:
         relation_handles = []
         relation_labels = []
         relation_name_map = {
-            0: "用户特征关系",
-            1: "用户套餐关系",
-            2: "用户行为关系",
+            # 0: "用户特征关系",
+            # 1: "用户套餐关系",
+            # 2: "用户行为关系",
 
-            # # 用户特征关系
-            # 0: "用户价值维度关系",
-            # 1: "用户信用维度关系",
-            # 2: "用户反馈维度关系",
-            #
-            # # 用户套餐关系
-            # 3: "套餐月租费关系",
-            # 4: "ARPU值关系",
-            #
-            # # 用户行为关系
-            # 5: "流量使用关系",
-            # 6: "语音超套费用关系",
-            # 7: "流量超套费用关系",
-            # 8: "MOU关系",
+            # 用户特征关系
+            0: "用户价值维度关系",
+            1: "用户信用维度关系",
+            2: "用户反馈维度关系",
+
+            # 用户套餐关系
+            3: "套餐月租费关系",
+            4: "ARPU值关系",
+
+            # 用户行为关系
+            5: "流量使用关系",
+            6: "语音超套费用关系",
+            7: "流量超套费用关系",
+            8: "MOU关系",
 
             -1: "未知关系类型"  # 添加默认关系类型
         }
@@ -603,10 +609,10 @@ class GraphGenerator:
 
 # 执行三元组生成并构建知识图谱
 def main():
+    set_seed(42)
     generator = GraphGenerator()
     generator.process()
 
 
 if __name__ == "__main__":
-    set_seed(45)
     main()

@@ -3,10 +3,10 @@ import time
 import torch
 import numpy as np
 
-from gnn.layers import ImprovedCausalRGCNConv
 from utils.helper import *
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from gnn.layers import ImprovedCausalRGCNConv
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score
 
 # 设置日志记录器
@@ -77,14 +77,14 @@ def preprocess_data(data):
     return data
 
 
-def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1, balance=0.8):
+def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1, balance=0.8, alpha=0.3):
     """
     混合损失函数：结合Focal Loss和标签平滑
 
     参数:
-        pred: 模型预测 [batch_size, num_classes]
-        target: 真实标签 [batch_size]
-        class_weights: 类别权重 [num_classes]
+        pred: 模型预测
+        target: 真实标签
+        class_weights: 类别权重
         gamma: Focal Loss聚焦参数，越大越关注难分样本
         label_smoothing: 标签平滑系数
         balance: Focal Loss比重 (1-balance为标签平滑损失比重)
@@ -94,48 +94,49 @@ def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1
 
     # 1. 计算概率和对数概率
     # 对预测logits应用log_softmax得到对数概率
-    log_prob = F.log_softmax(pred, dim=1)  # [batch_size, num_classes]
+    log_prob = F.log_softmax(pred, dim=1)
     # 计算预测概率（指数变换）
-    prob = torch.exp(log_prob)  # [batch_size, num_classes]
+    prob = torch.exp(log_prob)
 
     # 2. Focal Loss计算
     # 提取每个样本对应目标类别的预测概率
-    target_prob = prob.gather(1, target.unsqueeze(1)).squeeze(1)  # [batch_size]
+    target_prob = prob.gather(1, target.unsqueeze(1)).squeeze(1)
 
     # Focal Loss的核心: (1-p_t)^γ使模型关注难分样本
     # 当γ>0时，易分样本(p_t接近1)的权重变小，难分样本(p_t接近0)的权重变大
-    focal_weight = (1 - target_prob) ** gamma  # [batch_size]
+    focal_weight = alpha * (1 - target_prob) ** gamma
+    # focal_weight = (1 - target_prob) ** gamma
+
 
     # 应用类别权重以处理类别不平衡问题
     if class_weights is not None:
         # 为每个样本获取对应类别的权重
-        per_sample_weights = class_weights.gather(0, target)  # [batch_size]
+        per_sample_weights = class_weights.gather(0, target)
         # 将类别权重应用到focal权重上
-        focal_weight = focal_weight * per_sample_weights  # [batch_size]
+        focal_weight = focal_weight * per_sample_weights
 
     # 计算加权的Focal Loss值
-    focal_loss_val = -focal_weight * log_prob.gather(1, target.unsqueeze(1)).squeeze(1)  # [batch_size]
+    focal_loss_val = -focal_weight * log_prob.gather(1, target.unsqueeze(1)).squeeze(1)
 
     # 3. 标签平滑损失计算
     # 将目标标签转换为one-hot编码
-    target_one_hot = F.one_hot(target, num_classes).float()  # [batch_size, num_classes]
+    target_one_hot = F.one_hot(target, num_classes).float()
 
     # 应用标签平滑: 主类别概率为(1-α)，其余类别共享α概率
-    soft_target = target_one_hot * (1 - label_smoothing) + label_smoothing / num_classes  # [batch_size, num_classes]
+    soft_target = target_one_hot * (1 - label_smoothing) + label_smoothing / num_classes
 
     # 计算平滑标签的交叉熵损失
-    smooth_loss_val = -torch.sum(soft_target * log_prob, dim=1)  # [batch_size]
+    smooth_loss_val = -torch.sum(soft_target * log_prob, dim=1)
 
-    # 4. 组合两种损失
-    # 加权组合Focal Loss和标签平滑损失
-    combined_loss = balance * focal_loss_val + (1 - balance) * smooth_loss_val  # [batch_size]
+    # 4. 加权组合两种损失
+    combined_loss = balance * focal_loss_val + (1 - balance) * smooth_loss_val
 
     # 返回批次平均损失
     return combined_loss.mean()
 
 
-def calculate_emphasis_ignore_loss_optimized(model, data, out, similarity_threshold=0.9, max_pairs=100,
-                                             use_cache=True, feature_cache=None, max_total_pairs=300):
+def emphasis_ignore_loss(model, data, out, similarity_threshold=0.9, max_pairs=100,
+                         use_cache=True, feature_cache=None, max_total_pairs=300):
     """
     高效版的强调损失(Lp)和忽略损失(Ln)计算，增加提前停止功能
 
@@ -403,13 +404,6 @@ def train():
     label_smoothing = config["loss"]["label_smoothing"]
     loss_balance = config["loss"]["loss_balance"]
 
-    # 设置因果正则化参数
-    causal_reg_config = config["loss"]["causal_reg"]
-    causal_reg_enable = causal_reg_config["enable"]
-    causal_reg_weight = causal_reg_config["weight"]
-    if causal_reg_enable:
-        logger.info("本次训练中已启用因果正则化损失计算")
-
     # 设置Lp和Ln的权重系数
     r_cam_config = config["loss"]["r_cam"]
     enable_r_cam = r_cam_config["enable"]
@@ -431,36 +425,28 @@ def train():
         model.train()
 
         # 动态调整focal_gamma - 随训练进程逐渐降低
-        current_gamma = max(1.0, focal_gamma * (1 - epoch / epoch_num))
+        # current_gamma = max(1.0, focal_gamma * (1 - epoch / epoch_num))
 
         # 前向传播
         out = get_model_out(model_type, model, data)
 
         # 使用混合损失函数计算主损失
-        main_loss = hybrid_loss(
+        loss = hybrid_loss(
             out[data.train_mask],
             data.y[data.train_mask],
             class_weights=class_weights,
-            gamma=current_gamma,
+            gamma=focal_gamma,
             label_smoothing=label_smoothing,
-            balance=loss_balance
+            balance=loss_balance,
+            # class_counts=class_counts
         )
 
-        loss = main_loss
-        # 计算因果正则化损失
-        if causal_reg_enable and not enable_r_cam:
-            # 添加因果正则化损失
-            causal_reg_loss = 0.0
-            for module in model.modules():
-                if isinstance(module, ImprovedCausalRGCNConv):
-                    causal_reg_loss += module.causal_regularization_loss()
-
-            # 组合损失（从配置中获取权重或使用默认值）
-            loss = main_loss + causal_reg_weight * causal_reg_loss
+        # 记录主损失
+        main_loss = loss.clone()
 
         # 计算强调损失和忽略损失
-        if enable_r_cam and not causal_reg_enable:
-            Lp, Ln, num_lp_pairs, num_ln_pairs = calculate_emphasis_ignore_loss_optimized(
+        if enable_r_cam:
+            Lp, Ln, num_lp_pairs, num_ln_pairs = emphasis_ignore_loss(
                 model, data, out,
                 similarity_threshold=similarity_threshold,
                 max_pairs=max_pairs,
@@ -474,7 +460,7 @@ def train():
             # 动态调整损失
             if num_lp_pairs > 0 and num_ln_pairs > 0:
                 # 有效对数足够时才应用损失
-                loss = main_loss + lp_weight * Lp + ln_weight * Ln
+                loss = loss + lp_weight * Lp + ln_weight * Ln
 
         # 反向传播与优化
         optimizer.zero_grad()
@@ -497,9 +483,10 @@ def train():
                 out[data.val_mask],
                 data.y[data.val_mask],
                 class_weights=class_weights,
-                gamma=current_gamma,
+                gamma=focal_gamma,
                 label_smoothing=label_smoothing,
-                balance=loss_balance
+                balance=loss_balance,
+                # class_counts=class_counts
             )
 
             # 获取预测标签和真实标签

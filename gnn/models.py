@@ -16,7 +16,7 @@ __all__ = [
 ]
 
 class UserBehaviorGCN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, dropout=0.4, edge_dropout=0.05):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=9, dropout=0.4, edge_dropout=0.05):
         # 可调整参数: num_relations, aggr
         super(UserBehaviorGCN, self).__init__()
 
@@ -26,7 +26,7 @@ class UserBehaviorGCN(torch.nn.Module):
             in_channels=input_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
-            num_bases=2,
+            num_bases=6,
             aggr='max',  # 聚合方法：mean, add, max，目前性能好的组合：max + add / mean + add
             causal_strength=True,  # 启用因果强度预测
             sparsity=0.15  # 轻度稀疏性约束
@@ -39,7 +39,7 @@ class UserBehaviorGCN(torch.nn.Module):
             in_channels=hidden_dim,
             out_channels=hidden_dim,
             num_relations=num_relations,
-            num_bases=2,
+            num_bases=6,
             aggr='add',
             causal_strength=True,  # 启用因果强度预测
             sparsity=0.25  # 稀疏性约束递增
@@ -231,7 +231,7 @@ class GraphSAGE(torch.nn.Module):
 
 # 4. R-GCN - 2 RGCNConv layers
 class RGCN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=3, dropout=0.3, edge_dropout=0.1):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_relations=9, dropout=0.3, edge_dropout=0.1):
         super(RGCN, self).__init__()
         self.conv1 = RGCNConv(in_channels=input_dim, out_channels=hidden_dim, num_relations=num_relations, aggr='max')
         self.ln1 = LayerNorm(hidden_dim)

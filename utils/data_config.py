@@ -90,20 +90,30 @@ DIMENSION_MAPPINGS = {
 
 # 边类型映射
 DIMENSION_TO_RELATION = {
-    # 用户特征关系
+    # # 用户特征关系
+    # 'value': 0,
+    # 'credit': 0,
+    # 'feedback': 0,
+    #
+    # # 用户套餐关系
+    # 'package': 1,
+    # 'arpu': 1,
+    #
+    # # 用户行为关系
+    # 'traffic': 2,
+    # 'voice_exceed': 2,
+    # 'traffic_exceed': 2,
+    # 'mou': 2
+
     'value': 0,
-    'credit': 0,
-    'feedback': 0,
-
-    # 用户套餐关系
-    'package': 1,
-    'arpu': 1,
-
-    # 用户行为关系
-    'traffic': 2,
-    'voice_exceed': 2,
-    'traffic_exceed': 2,
-    'mou': 2
+    'credit': 1,
+    'feedback': 2,
+    'package': 3,
+    'arpu': 4,
+    'traffic': 5,
+    'voice_exceed': 6,
+    'traffic_exceed': 7,
+    'mou': 8
 }
 
 # 用户类型比例
