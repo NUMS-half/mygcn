@@ -475,33 +475,3 @@ class ImprovedCausalRGCNConv(MessagePassing):
             'intervened': intervened,
             'effect': effect
         }
-
-    def causal_regularization_loss(self):
-        """
-        计算因果稀疏性正则化损失，鼓励学习稀疏的因果关系
-
-        返回:
-            正则化损失
-        """
-        if not self.causal_strength:
-            return 0.0
-
-        # 获取因果强度权重
-        weights = self.causal_strength_weights.view(-1)
-
-        # 1. 基础L1稀疏正则化
-        l1_reg = torch.norm(weights, p=1)
-
-        # 2. 结构化稀疏正则化 - 促进幂律分布
-        # 排序权重并计算前20%与其余权重的差异
-        abs_weights = torch.abs(weights)
-        sorted_weights, _ = torch.sort(abs_weights, descending=True)
-        k = max(1, int(len(sorted_weights) * 0.2))  # 前20%的权重
-
-        # 鼓励少数高权重与多数低权重的差距
-        gap_reg = torch.mean(sorted_weights[:k]) - torch.mean(sorted_weights[k:])
-
-        # 组合损失 - 简单且有效
-        total_loss = self.sparsity * l1_reg - 0.5 * self.sparsity * gap_reg
-
-        return total_loss

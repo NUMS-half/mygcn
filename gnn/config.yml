@@ -2,14 +2,14 @@
 
 # 训练参数
 training:
-  epoch_num: 800                # 训练的总轮数
-  patience: 40                  # 早停耐心值，连续多少轮无改进后停止训练
-  print_interval: 20            # 打印训练信息的间隔轮数
+  epoch_num: 500                # 训练的总轮数
+  patience: 50                  # 早停耐心值，连续多少轮无改进后停止训练
+  print_interval: 25            # 打印训练信息的间隔轮数
   enable_early_stopping: true   # 是否启用早停机制
 
 # 模型配置
 model:
-  type: "UserBehaviorGCN"        # 模型类型，可选 "UserBehaviorGCN" "GraphSAGE" "GCN" "GAT" "RGCN"
+  type: "UserBehaviorGCN"        # 模型类型，可选 "UserBehaviorGCN" "GraphSAGE" "GCN" "GAT" "RGCN" "CausalRGCN"
   hidden_dim: 256                # 隐藏层的维度
   output_dim: 6                  # 输出层的维度（类别数量）
   dropout: 0.3                   # Dropout比率，防止过拟合
@@ -25,14 +25,7 @@ optimizer:
 scheduler:
   type: "ReduceLROnPlateau"      # 学习率调度器类型
 
-  # OneCycleLR 调度器配置
-  max_lr: 0.025                  # 最大学习率
-  pct_start: 0.15                # 学习率上升阶段占总训练的比例
-  anneal_strategy: "cos"         # 学习率下降策略，"cos"或"linear"
-  div_factor: 20                 # 决定 init_lr = max_lr / div_factor
-  final_div_factor: 100          # 决定 min_lr = init_lr / final_div_factor
-
-  # ReduceLROnPlateau 调度器配置（更适合于早停机制）
+  # ReduceLROnPlateau 调度器配置（更适配于早停机制）
   mode: "min"           # 最小化验证损失
   factor: 0.75          # 学习率减少因子
   patience: 5           # 等待多少个epoch无改善后降低学习率
@@ -52,10 +45,10 @@ loss:
 
   r_cam:
     enable: false            # 是否启用 R-CAM（强调/忽略损失）
-    lp_weight: 1.0          # 强调损失(Lp)的权重
-    ln_weight: 1.0          # 忽略损失(Ln)的权重
-    similarity_threshold: 0.95    # 强调/忽略损失中的相似度阈值，论文固定为 0.9
-    max_pairs: 300                # 创新点：限制每个正确分类样本最多与多少个目标节点形成对，防止单个高度活跃节点主导整个损失计算，类似于"每个人最多发言3分钟"的规则
+    lp_weight: 1.5          # 强调损失(Lp)的权重
+    ln_weight: 1.5          # 忽略损失(Ln)的权重
+    similarity_threshold: 0.95     # 强调/忽略损失中的相似度阈值，论文固定为 0.9
+    max_pairs: 500                # 创新点：限制每个正确分类样本最多与多少个目标节点形成对，防止单个高度活跃节点主导整个损失计算，类似于"每个人最多发言3分钟"的规则
     max_total_pairs: 3000         # 创新点：限制计算强调/忽略损失时，总共收集的节点对数量，目的是为了简化复杂度
 
 # 梯度处理
@@ -64,9 +57,10 @@ gradient:
 
 # 路径配置
 paths:
-  model_dir: "../output/model"   # 模型保存路径
+  output_dir: "../output"   # 模型保存路径
   log_dir: "../logs"             # 日志保存路径
 
 # 评估配置
 evaluation:
-  visualization: true            # 是否生成可视化图表
+  print_metrics: true        # 打印评估指标
+  visualization: true        # 生成可视化图表

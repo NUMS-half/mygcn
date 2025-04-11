@@ -190,6 +190,9 @@ def get_model(config, num_features, device):
         elif model_type == "RGCN":
             model = RGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
             logger.info(f"创建RGCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
+        elif model_type == "CausalRGCN":
+            model = CausalRGCN(num_features, hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout, edge_dropout=edge_dropout)
+            logger.info(f"创建CausalRGCN模型: hidden_dim={hidden_dim}, output_dim={output_dim}, dropout={dropout}, edge_dropout={edge_dropout}")
         else:
           logger.error(f"不支持的模型类型: {model_type}")
           raise ValueError(f"不支持的模型类型: {model_type}")
@@ -208,7 +211,7 @@ def get_model_out(model_type, model, data):
         out: 模型输出
     """
 
-    if model_type == "UserBehaviorGCN" or model_type == "RGCN":
+    if model_type in ["UserBehaviorGCN", "RGCN", "CausalRGCN"]:
         return model(data.x, data.edge_index, data.edge_type)
         # return model(data.x, data.edge_index, data.edge_type, data.edge_attr)
     else:

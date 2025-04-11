@@ -1,19 +1,23 @@
 import os
 import time
 import torch
+import pickle
+import traceback
 import numpy as np
-
 from utils.helper import *
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from gnn.layers import ImprovedCausalRGCNConv
-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score, roc_auc_score
 
 # 设置日志记录器
 logger = get_logger("Train")
 
+# 加载配置文件
+config = load_config()
+
 # 创建输出目录
-output_dir = "../output"
+output_dir = config["paths"]["output_dir"]
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
     logger.info(f"已创建输出目录: {output_dir}")
@@ -106,7 +110,6 @@ def hybrid_loss(pred, target, class_weights=None, gamma=2.0, label_smoothing=0.1
     # 当γ>0时，易分样本(p_t接近1)的权重变小，难分样本(p_t接近0)的权重变大
     focal_weight = alpha * (1 - target_prob) ** gamma
     # focal_weight = (1 - target_prob) ** gamma
-
 
     # 应用类别权重以处理类别不平衡问题
     if class_weights is not None:
@@ -314,6 +317,7 @@ def emphasis_ignore_loss(model, data, out, similarity_threshold=0.9, max_pairs=1
 
     return Lp, Ln, num_lp_pairs, num_ln_pairs
 
+
 def calculate_class_weights(class_counts, beta=0.9999, adjustment=2.0):
     """
     计算优化的类别权重
@@ -339,20 +343,30 @@ def calculate_class_weights(class_counts, beta=0.9999, adjustment=2.0):
     return normalized_weights
 
 
-def train():
+def train(seed=2345, model_type=None, model_save_dir=None):
     """训练 GNN 模型，使用YAML配置中的参数"""
 
-    # 加载参数配置
-    config = load_config()
+    # 设置随机种子
+    set_seed(seed)
 
     # 记录开始时间
     start_time = time.time()
 
-    model_type = config["model"]["type"]
+    if (model_type is None):
+        model_type = config["model"]["type"]
     epoch_num = config["training"]["epoch_num"]
     patience = config["training"]["patience"]
     print_interval = config["training"]["print_interval"]
     enable_early_stopping = config["training"]["enable_early_stopping"]
+
+    # 确定模型保存路径
+    if model_save_dir is None:
+        model_save_dir = os.path.join(output_dir, f"model")
+
+    # 确保目录存在
+    if not os.path.exists(model_save_dir):
+        os.makedirs(model_save_dir)
+        logger.info(f"创建模型保存目录: {model_save_dir}")
 
     data = preprocess_data(load_data())
 
@@ -384,9 +398,6 @@ def train():
     # 早停参数
     counter = 0
     best_macro_f1 = 0.0
-    best_model_path = os.path.join(output_dir, "model")
-    if not os.path.exists(best_model_path):
-        os.makedirs(best_model_path)
 
     # 跟踪指标列表
     train_losses = []
@@ -396,6 +407,7 @@ def train():
     val_recalls = []
     val_macro_f1s = []
     val_weighted_f1s = []
+    val_macro_auc_rocs = []
     epochs = []
     learning_rates = []
 
@@ -413,12 +425,13 @@ def train():
     max_pairs = r_cam_config["max_pairs"]
     max_total_pairs = r_cam_config["max_total_pairs"]
     if enable_r_cam:
-        logger.info(f"训练已启用强调损失(lp)和忽略损失(ln)计算： Lp权重={lp_weight}, Ln权重={ln_weight}, 相似度阈值={similarity_threshold}, 单点最大对数={max_pairs}, 最大总对数={max_total_pairs}")
+        logger.info(
+            f"训练已启用强调损失(lp)和忽略损失(ln)计算： Lp权重={lp_weight}, Ln权重={ln_weight}, 相似度阈值={similarity_threshold}, 单点最大对数={max_pairs}, 最大总对数={max_total_pairs}")
 
     # 梯度裁剪参数
     clip_norm = config["gradient"]["clip_norm"]
 
-    # 可视化参数
+    # 评价方式配置
     visualize = config["evaluation"]["visualization"]
 
     for epoch in range(epoch_num):
@@ -438,7 +451,6 @@ def train():
             gamma=focal_gamma,
             label_smoothing=label_smoothing,
             balance=loss_balance,
-            # class_counts=class_counts
         )
 
         # 记录主损失
@@ -486,7 +498,6 @@ def train():
                 gamma=focal_gamma,
                 label_smoothing=label_smoothing,
                 balance=loss_balance,
-                # class_counts=class_counts
             )
 
             # 获取预测标签和真实标签
@@ -502,6 +513,10 @@ def train():
             val_macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
             val_weighted_f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
 
+            # 计算Macro AUC-ROC（采用 OVR）
+            probabilities = F.softmax(out[data.val_mask], dim=1).cpu().numpy()
+            val_macro_auc_roc = roc_auc_score(y_true, probabilities, multi_class='ovr', average='macro')
+
         # 记录指标
         train_losses.append(loss.item())
         val_losses.append(val_loss.item())
@@ -510,6 +525,7 @@ def train():
         val_weighted_f1s.append(val_weighted_f1)
         val_precisions.append(val_precision)
         val_recalls.append(val_recall)
+        val_macro_auc_rocs.append(val_macro_auc_roc)
         epochs.append(epoch)
 
         # 更新学习率
@@ -517,21 +533,17 @@ def train():
 
         # 每interval个epoch打印指标
         if epoch % print_interval == 0:
-            if enable_r_cam:
-                logger.info(
-                    f"Epoch {epoch}: 【Loss】 Main: {main_loss.item():.4f}, Lp: {Lp.item():.4f}, Ln: {Ln.item():.4f}, Total: {loss.item():.4f} "
-                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, Macro-F1: {val_macro_f1:.4f}"
-                )
-            else:
-                logger.info(
-                    f"Epoch {epoch}: 【Loss】 Main: {main_loss.item():.4f}, Total: {loss.item():.4f} "
-                    f"【Val】 Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, Macro-F1: {val_macro_f1:.4f}"
-                )
+            logger.info(
+                f"Epoch {epoch}: 【Train】Main Loss: {main_loss.item():.4f}, Total Loss: {loss.item():.4f} "
+                f"{f'Lp: {Lp.item():.4f}, Ln: {Ln.item():.4f}' if enable_r_cam else ''} "
+                f"【Val】Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, Macro-F1: {val_macro_f1:.4f}"
+            )
 
         # 使用F1分数作为早停标准
         if val_macro_f1 > best_macro_f1:
             best_macro_f1 = val_macro_f1
-            torch.save(model.state_dict(), os.path.join(best_model_path, "best_model.pth"))
+            best_model_file = os.path.join(model_save_dir, "best_model.pth")
+            torch.save(model.state_dict(), best_model_file)
             counter = 0
             logger.info(f"✅模型改进! 当前Epoch: {epoch}, 最佳Macro-F1: {best_macro_f1:.4f}, 验证准确率: {val_acc:.4f}")
         else:
@@ -552,7 +564,20 @@ def train():
         visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
                                    val_precisions, val_recalls, val_macro_f1s, learning_rates)
 
-    return best_model_path
+    # 返回更多信息：最佳模型路径和训练过程数据
+    epoch_data = {
+        'epoch': epochs,
+        'train_loss': train_losses,
+        'val_loss': val_losses,
+        'val_accuracy': val_accuracies,
+        'val_precision': val_precisions,
+        'val_recall': val_recalls,
+        'val_f1_macro': val_macro_f1s,
+        'val_f1_weighted': val_weighted_f1s,
+        'val_macro_auc_roc': val_macro_auc_rocs
+    }
+
+    return epoch_data
 
 
 def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
@@ -726,6 +751,7 @@ def analyze_interventions(model, data, config):
 
     return causal_influence
 
+
 def evaluate(model, split, data=None, config=None):
     """在验证集或测试集上评估模型，计算多种性能指标
 
@@ -772,6 +798,7 @@ def evaluate(model, split, data=None, config=None):
             results['f1-macro'] = 0
             results['f1-weighted'] = 0
             results['kappa'] = 0
+            results['macro-auc-roc'] = 0
             results['confusion_matrix'] = np.array([[0]])
             return results
 
@@ -786,20 +813,23 @@ def evaluate(model, split, data=None, config=None):
         results['f1-macro'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
         results['f1-weighted'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
         results['kappa'] = cohen_kappa_score(y_true, y_pred)
+
+        # 计算宏平均AUC-ROC (OVR方式)
+        probabilities = F.softmax(out[mask], dim=1).cpu().numpy()
+        results['macro-auc-roc'] = roc_auc_score(y_true, probabilities, multi_class='ovr', average='macro')
+
         results['confusion_matrix'] = confusion_matrix(y_true, y_pred)
 
     return results
 
 
-def test(model_path=None, config_path="config.yml"):
+def test(model_path=None):
     """测试模型
 
     Args:
         model_path: 模型权重路径，如果为None则使用默认路径
-        config_path: 配置文件路径
     """
     # 加载配置
-    config = load_config(config_path)
     test_logger = get_logger("Test")
 
     test_logger.info(f"{'=' * 15} 测试集进行评估 {'=' * 15}")
@@ -809,10 +839,6 @@ def test(model_path=None, config_path="config.yml"):
 
     # 使用配置创建模型
     model = get_model(config, data.num_features, device)
-
-    # 确定模型权重路径
-    if model_path is None:
-        model_path = os.path.join(config["paths"]["model_dir"], "best_model.pth")
 
     # 加载最佳模型权重
     if os.path.exists(model_path):
@@ -827,11 +853,14 @@ def test(model_path=None, config_path="config.yml"):
     test_results = evaluate(model, "test", data, config)
 
     # 添加因果干预分析
-    test_logger.info(f"{'=' * 15} 执行因果干预分析 {'=' * 15}")
-    analyze_interventions(model, data, config)
+    if config["model"]["type"] == "ImprovedCausalRGCN":
+        test_logger.info(f"{'=' * 15} 执行因果干预分析 {'=' * 15}")
+        analyze_interventions(model, data, config)
 
     # 输出测试结果
-    print_metrics_table(test_results, logger)
+    print_metrics = config["evaluation"]["print_metrics"]
+    if print_metrics:
+        print_metrics_table(test_results, logger)
 
     return test_results
 
@@ -846,12 +875,12 @@ def print_metrics_table(results, logger, title="测试集评估结果"):
         title: 表格标题
     """
     table_header = f"{'=' * 15} {title} {'=' * 15}"
-    table_divider = "+-------------+----------+"
-    table_format = "| {metric:<11} | {value:>8.6f} |"
+    table_divider = "+---------------+----------+"
+    table_format = "| {metric:<13} | {value:>8.6f} |"
 
     logger.info(table_header)
     logger.info(table_divider)
-    logger.info("| Metric      | Value    |")
+    logger.info("| Metric        | Value    |")
     logger.info(table_divider)
     logger.info(table_format.format(metric="Accuracy", value=results['accuracy']))
     logger.info(table_format.format(metric="Precision", value=results['precision']))
@@ -859,6 +888,7 @@ def print_metrics_table(results, logger, title="测试集评估结果"):
     logger.info(table_format.format(metric="Kappa-Score", value=results['kappa']))
     logger.info(table_format.format(metric="Macro-F1", value=results['f1-macro']))
     logger.info(table_format.format(metric="Weighted-F1", value=results['f1-weighted']))
+    logger.info(table_format.format(metric="Macro-AUC-ROC", value=results['macro-auc-roc']))
     logger.info(table_divider)
 
     # 输出混淆矩阵
@@ -866,7 +896,7 @@ def print_metrics_table(results, logger, title="测试集评估结果"):
     logger.info(f"Confusion Matrix:\n{conf_matrix}")
 
     # 计算每个类别的预测准确率
-    logger.info(f"\n{'=' * 15} 各类别预测准确率 {'=' * 15}")
+    logger.info(f"\n{'=' * 20} 各类别预测准确率 {'=' * 20}")
 
     # 直接从混淆矩阵计算每个类别的准确率
     for i in range(conf_matrix.shape[0]):
@@ -880,14 +910,165 @@ def print_metrics_table(results, logger, title="测试集评估结果"):
 
 if __name__ == "__main__":
     try:
-        set_seed(2345)  # 设置随机种子
-        best_model_path = train()  # 训练模型
-        if best_model_path:
-            test()  # 测试模型
+        model_dir = os.path.join(output_dir, "model")
+        epoch_data = train(seed=42, model_save_dir=model_dir)  # 训练模型
+        if epoch_data:
+            best_model_dir = os.path.join(model_dir, "best_model.pth")
+            test(best_model_dir)  # 测试模型
         else:
             logger.error("训练失败，跳过测试")
     except Exception as e:
         logger.error(f"训练或测试过程发生错误: {e}")
-        import traceback
 
         logger.error(traceback.format_exc())
+
+def train_model_with_seed(seed, output_dir):
+    """使用指定种子训练模型"""
+    logger.info(f"{'=' * 20} 训练模型 - 种子 {seed} {'=' * 20}")
+
+    model_type = config["model"]["type"]
+    # 为当前种子创建专用模型保存路径
+    seed_model_path = os.path.join(output_dir, f"model_{model_type}", f"seed_{seed}")
+    if not os.path.exists(seed_model_path):
+        os.makedirs(seed_model_path)
+        logger.info(f"创建种子{seed}的模型保存目录: {seed_model_path}")
+
+    try:
+        # 训练模型并获取epoch数据
+        epoch_data = train(seed=seed, model_save_dir=seed_model_path)
+        logger.info(f"种子 {seed} 训练完成")
+        return epoch_data
+    except Exception as e:
+        logger.error(f"种子 {seed} 训练过程发生错误: {e}")
+        logger.error(traceback.format_exc())
+        return None
+
+
+def test_trained_models(seed_list, output_dir, test_data, config):
+    """测试每个种子训练的最佳模型"""
+    logger.info(f"{'=' * 20} 开始多模型测试评估 {'=' * 20}")
+
+    all_results = []
+    all_metrics = {
+        'accuracy': [], 'precision': [], 'recall': [],
+        'f1-macro': [], 'f1-weighted': [], 'kappa': [], 'macro-auc-roc': []
+    }
+
+    model_type = config["model"]["type"]
+    for seed in seed_list:
+        model_file = os.path.join(output_dir, f"model_{model_type}", f"seed_{seed}", "best_model.pth")
+
+        if not os.path.exists(model_file):
+            logger.warning(f"种子 {seed} 的模型文件不存在: {model_file}")
+            continue
+
+        # 创建模型并加载权重
+        model = get_model(config, test_data.num_features, device)
+        model.load_state_dict(torch.load(model_file, map_location=device, weights_only=True))
+        logger.info(f"成功加载种子 {seed} 的模型权重")
+
+        # 在测试集上评估
+        model.eval()
+        test_results = evaluate(model, "test", test_data, config)
+        all_results.append(test_results)
+
+        # 收集原始指标数据
+        for metric in all_metrics.keys():
+            all_metrics[metric].append(test_results[metric])
+
+        # 输出当前种子模型的性能
+        logger.info(
+            f"种子 {seed} 模型测试结果: Acc={test_results['accuracy']:.4f}, F1={test_results['f1-macro']:.4f}, Macro-AUC-ROC={test_results['macro-auc-roc']:.4f}")
+
+    return all_results, all_metrics
+
+
+def calculate_summary_statistics(all_metrics):
+    """计算各指标的平均值和标准差"""
+    summary = {}
+    for metric in all_metrics.keys():
+        values = all_metrics[metric]
+        summary[metric] = {
+            'mean': np.mean(values),
+            'std': np.std(values)
+        }
+    return summary
+
+
+def print_summary_table(summary, num_runs):
+    """打印性能指标汇总表格"""
+    logger.info(f"{'=' * 25} 总体性能评估 ({num_runs}轮) {'=' * 25}")
+    table_format = "| {metric:<13} | {mean:>10.6f} ± {std:<10.6f} |"
+    logger.info("+----------------+---------------------------+")
+    logger.info("| 指标           | 均值 ± 标准差             |")
+    logger.info("+----------------+---------------------------+")
+
+    for metric, stats in summary.items():
+        logger.info(table_format.format(metric=metric, mean=stats['mean'], std=stats['std']))
+
+    logger.info("+----------------+---------------------------+")
+
+
+def save_results(save_data, output_dir):
+    """保存结果到PKL文件"""
+
+    model_type = config["model"]["type"]
+    metrics_file = os.path.join(output_dir, f"model_{model_type}", "all_metrics_data.pkl")
+    with open(metrics_file, 'wb') as f:
+        pickle.dump(save_data, f)
+    logger.info(f"所有评估指标和epoch数据已保存到: {metrics_file}")
+
+
+def run_multi_seed_training(seed_list, output_dir):
+    """运行多种子训练和评估的主函数"""
+    logger.info(f"使用随机种子列表: {seed_list}，进行{len(seed_list)}轮训练和评估")
+
+    # 初始化epoch数据收集
+    epoch_data = {
+        'epoch': None,
+        'train_loss': [], 'val_loss': [], 'val_accuracy': [],
+        'val_precision': [], 'val_recall': [], 'val_f1_macro': [],
+        'val_f1_weighted': [], 'val_macro_auc_aoc': []
+    }
+
+    # 训练阶段
+    for i, seed in enumerate(seed_list):
+        logger.info(f"轮次 {i + 1}/{len(seed_list)}")
+        seed_epoch_data = train_model_with_seed(seed, output_dir)
+
+        # 保存有效的epoch数据
+        if seed_epoch_data:
+            if epoch_data['epoch'] is None and 'epoch' in seed_epoch_data:
+                epoch_data['epoch'] = seed_epoch_data['epoch']
+
+            for key in seed_epoch_data:
+                if key != 'epoch' and key in epoch_data:
+                    epoch_data[key].append(seed_epoch_data[key])
+
+    # 测试阶段
+    test_data = preprocess_data(load_data())
+    all_results, all_metrics = test_trained_models(seed_list, output_dir, test_data, config)
+
+    # 汇总结果
+    if all_results:
+        # 计算统计数据并打印汇总表格
+        summary = calculate_summary_statistics(all_metrics)
+        print_summary_table(summary, len(all_results))
+
+        # 保存结果
+        save_data = {**all_metrics, 'seeds': seed_list}
+
+        # 添加epoch数据
+        for key, value in epoch_data.items():
+            if value is not None:
+                save_data[key] = value
+
+        save_results(save_data, output_dir)
+    else:
+        logger.error("所有轮次均失败，无法计算平均性能")
+
+
+# if __name__ == "__main__":
+#     # 设置多个随机种子
+#     seed_list = [42, 512, 45, 1024, 2345]
+#     run_multi_seed_training(seed_list, output_dir)

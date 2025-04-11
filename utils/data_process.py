@@ -380,7 +380,7 @@ class GraphGenerator:
         self.logger.info(f"数据集划分: 订单节点 - 训练:{len(train_order_indices)}, 验证:{len(val_order_indices)}, 测试:{len(test_order_indices)}")
         self.logger.info(f"非订单节点(全部分配到训练集): {len(non_order_indices)}")
 
-    def visualize_graph(self, graph, save=False, output_path="../data/processed/knowledge_graph.png"):
+    def visualize_graph(self, graph, save=True, output_path="../data/processed/knowledge_graph.png"):
         """
         高级知识图谱可视化函数，支持多种节点类型和关系类型的区分显示
 
@@ -447,12 +447,12 @@ class GraphGenerator:
         for node, data in graph.nodes(data=True):
             node_type = data['type']
             if node_type == 'order':
-                size = 800  # 订单节点更大
+                size = 900  # 订单节点更大
                 shape = 'o'  # 圆形
                 # 创建简洁标签
                 node_labels[node] = f"{str(node)[:8]}..."
             else:  # status
-                size = 500
+                size = 600
                 shape = 's'  # 方形
                 node_labels[node] = str(node)
 
@@ -547,11 +547,11 @@ class GraphGenerator:
         # 合并图例
         all_handles = node_handles + relation_handles
         all_labels = node_labels + relation_labels
-        plt.legend(all_handles, all_labels, loc='upper right', fontsize=14,
+        plt.legend(all_handles, all_labels, loc='upper right', fontsize=16,
                    fancybox=True, framealpha=0.9, edgecolor='gray')
 
         # 设置标题和背景
-        plt.title("知识图谱可视化", fontsize=24, fontweight='bold', pad=20)
+        plt.title("知识图谱可视化", fontsize=28, fontweight='bold', pad=20)
 
         # 移除坐标轴
         plt.axis('off')
@@ -561,9 +561,6 @@ class GraphGenerator:
         plt.gca().spines['right'].set_visible(True)
         plt.gca().spines['bottom'].set_visible(True)
         plt.gca().spines['left'].set_visible(True)
-
-        # 添加水印
-        plt.figtext(0.5, 0.01, "知识图谱关系分析", ha="center", fontsize=10, color="gray")
 
         # 调整布局
         plt.tight_layout()
@@ -588,7 +585,7 @@ class GraphGenerator:
         # self.save_triples_to_dir()  # 保存三元组(可选)
         graph = self.build_knowledge_graph()  # 构建知识图谱
         self.save_graph_as_pt(graph, train_ratio, val_ratio)  # 保存图谱(划分数据集)
-        # self.visualize_graph(graph)  # 可视化图谱(可选)
+        self.visualize_graph(graph)  # 可视化图谱(可选)
 
     def process(self):
         """数据预处理全流程"""
