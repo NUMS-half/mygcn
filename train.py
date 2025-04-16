@@ -7,7 +7,7 @@ import numpy as np
 from utils.helper import *
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from gnn.layers import ImprovedCausalRGCNConv
+from gnn.layers import CausalRGCNConv
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, cohen_kappa_score, roc_auc_score
 
 # 设置日志记录器
@@ -38,7 +38,7 @@ def load_data():
     if _cached_data is not None:
         return _cached_data
     try:
-        path = f"../data/processed/knowledge_graph.pt"
+        path = f"data/processed/knowledge_graph.pt"
         logger.info(f"正在从 {path} 加载图谱数据")
         _cached_data = torch.load(path, weights_only=False)
 
@@ -534,7 +534,7 @@ def train(seed=2345, model_type=None, model_save_dir=None):
         # 每interval个epoch打印指标
         if epoch % print_interval == 0:
             logger.info(
-                f"Epoch {epoch}: 【Train】Main Loss: {main_loss.item():.4f}, Total Loss: {loss.item():.4f} "
+                f"Epoch[{epoch}/{epoch_num}] 【Train】Main Loss: {main_loss.item():.4f}, Total Loss: {loss.item():.4f} "
                 f"{f'Lp: {Lp.item():.4f}, Ln: {Ln.item():.4f}' if enable_r_cam else ''} "
                 f"【Val】Loss: {val_loss.item():.4f}, Acc: {val_acc:.4f}, Macro-F1: {val_macro_f1:.4f}"
             )
@@ -545,7 +545,7 @@ def train(seed=2345, model_type=None, model_save_dir=None):
             best_model_file = os.path.join(model_save_dir, "best_model.pth")
             torch.save(model.state_dict(), best_model_file)
             counter = 0
-            logger.info(f"✅模型改进! 当前Epoch: {epoch}, 最佳Macro-F1: {best_macro_f1:.4f}, 验证准确率: {val_acc:.4f}")
+            logger.info(f"Epoch[{epoch}/{epoch_num}] ✅模型改进! 最佳Macro-F1: {best_macro_f1:.4f}, 验证准确率: {val_acc:.4f}")
         else:
             counter += 1
 
@@ -703,9 +703,9 @@ def analyze_interventions(model, data, config):
 
         return hook
 
-    # 为每个ImprovedCausalRGCNConv层注册钩子
+    # 为每个CausalRGCNConv层注册钩子
     for name, module in model.named_modules():
-        if isinstance(module, ImprovedCausalRGCNConv):
+        if isinstance(module, CausalRGCNConv):
             handles.append(module.register_forward_hook(get_input_hook(name)))
 
     # 执行一次前向传播
@@ -719,7 +719,7 @@ def analyze_interventions(model, data, config):
     # 收集所有因果层的分析结果
     causal_influence = {}
     for name, module in model.named_modules():
-        if isinstance(module, ImprovedCausalRGCNConv) and name in hidden_features:
+        if isinstance(module, CausalRGCNConv) and name in hidden_features:
             layer_results = {}
 
             # 对每个特征节点单独进行干预分析
@@ -853,7 +853,7 @@ def test(model_path=None):
     test_results = evaluate(model, "test", data, config)
 
     # 添加因果干预分析
-    if config["model"]["type"] == "ImprovedCausalRGCN":
+    if config["model"]["type"] == "CausalRGCN":
         test_logger.info(f"{'=' * 15} 执行因果干预分析 {'=' * 15}")
         analyze_interventions(model, data, config)
 
@@ -908,27 +908,12 @@ def print_metrics_table(results, logger, title="测试集评估结果"):
             logger.info(f"类别 {i}: 无样本")
 
 
-if __name__ == "__main__":
-    try:
-        model_dir = os.path.join(output_dir, "model")
-        epoch_data = train(seed=42, model_save_dir=model_dir)  # 训练模型
-        if epoch_data:
-            best_model_dir = os.path.join(model_dir, "best_model.pth")
-            test(best_model_dir)  # 测试模型
-        else:
-            logger.error("训练失败，跳过测试")
-    except Exception as e:
-        logger.error(f"训练或测试过程发生错误: {e}")
-
-        logger.error(traceback.format_exc())
-
-def train_model_with_seed(seed, output_dir):
+def train_model_with_seed(turn, seed, output_dir):
     """使用指定种子训练模型"""
-    logger.info(f"{'=' * 20} 训练模型 - 种子 {seed} {'=' * 20}")
 
     model_type = config["model"]["type"]
     # 为当前种子创建专用模型保存路径
-    seed_model_path = os.path.join(output_dir, f"model_{model_type}", f"seed_{seed}")
+    seed_model_path = os.path.join(output_dir, f"model_{model_type}", f"{turn}_seed_{seed}")
     if not os.path.exists(seed_model_path):
         os.makedirs(seed_model_path)
         logger.info(f"创建种子{seed}的模型保存目录: {seed_model_path}")
@@ -955,17 +940,17 @@ def test_trained_models(seed_list, output_dir, test_data, config):
     }
 
     model_type = config["model"]["type"]
-    for seed in seed_list:
-        model_file = os.path.join(output_dir, f"model_{model_type}", f"seed_{seed}", "best_model.pth")
+    for i, seed in enumerate(seed_list):
+        model_file = os.path.join(output_dir, f"model_{model_type}", f"{i + 1}_seed_{seed}", "best_model.pth")
 
         if not os.path.exists(model_file):
-            logger.warning(f"种子 {seed} 的模型文件不存在: {model_file}")
+            logger.warning(f"第 {i + 1} 轮（种子为{seed}）的模型文件不存在: {model_file}")
             continue
 
         # 创建模型并加载权重
         model = get_model(config, test_data.num_features, device)
         model.load_state_dict(torch.load(model_file, map_location=device, weights_only=True))
-        logger.info(f"成功加载种子 {seed} 的模型权重")
+        logger.info(f"成功加载第 {i + 1} 轮（种子为{seed}）的模型权重")
 
         # 在测试集上评估
         model.eval()
@@ -978,7 +963,7 @@ def test_trained_models(seed_list, output_dir, test_data, config):
 
         # 输出当前种子模型的性能
         logger.info(
-            f"种子 {seed} 模型测试结果: Acc={test_results['accuracy']:.4f}, F1={test_results['f1-macro']:.4f}, Macro-AUC-ROC={test_results['macro-auc-roc']:.4f}")
+            f"第 {i + 1} 轮（种子{seed}）模型测试结果: Acc={test_results['accuracy']:.4f}, F1={test_results['f1-macro']:.4f}, Macro-AUC-ROC={test_results['macro-auc-roc']:.4f}")
 
     return all_results, all_metrics
 
@@ -998,15 +983,15 @@ def calculate_summary_statistics(all_metrics):
 def print_summary_table(summary, num_runs):
     """打印性能指标汇总表格"""
     logger.info(f"{'=' * 25} 总体性能评估 ({num_runs}轮) {'=' * 25}")
-    table_format = "| {metric:<13} | {mean:>10.6f} ± {std:<10.6f} |"
-    logger.info("+----------------+---------------------------+")
-    logger.info("| 指标           | 均值 ± 标准差             |")
-    logger.info("+----------------+---------------------------+")
+    table_format = "| {metric:<13} | {mean:>6.4f} ± {std:<6.4f} |"
+    logger.info("+---------------+-----------------+")
+    logger.info("| 指标           | 均值 ± 标准差     |")
+    logger.info("+---------------+-----------------+")
 
     for metric, stats in summary.items():
         logger.info(table_format.format(metric=metric, mean=stats['mean'], std=stats['std']))
 
-    logger.info("+----------------+---------------------------+")
+    logger.info("+---------------+-----------------+")
 
 
 def save_results(save_data, output_dir):
@@ -1033,8 +1018,8 @@ def run_multi_seed_training(seed_list, output_dir):
 
     # 训练阶段
     for i, seed in enumerate(seed_list):
-        logger.info(f"轮次 {i + 1}/{len(seed_list)}")
-        seed_epoch_data = train_model_with_seed(seed, output_dir)
+        logger.info(f"{'=' * 18} 轮次 {i + 1}/{len(seed_list)} 训练模型 - 种子 {seed} {'=' * 18}")
+        seed_epoch_data = train_model_with_seed(i + 1, seed, output_dir)
 
         # 保存有效的epoch数据
         if seed_epoch_data:
@@ -1067,8 +1052,22 @@ def run_multi_seed_training(seed_list, output_dir):
     else:
         logger.error("所有轮次均失败，无法计算平均性能")
 
-
 # if __name__ == "__main__":
-#     # 设置多个随机种子
-#     seed_list = [42, 512, 45, 1024, 2345]
+#   # 设置多个随机种子
+#     seed_list = [45, 512, 45, 1024, 2345]
+#     # seed_list = list(2345 for i in range(5))  # 2345
 #     run_multi_seed_training(seed_list, output_dir)
+
+if __name__ == "__main__":
+    try:
+        model_dir = os.path.join(output_dir, "model")
+        epoch_data = train(seed=2345, model_save_dir=model_dir)  # 训练模型
+        if epoch_data:
+            best_model_dir = os.path.join(model_dir, "best_model.pth")
+            test(best_model_dir)  # 测试模型
+        else:
+            logger.error("训练失败，跳过测试")
+    except Exception as e:
+        logger.error(f"训练或测试过程发生错误: {e}")
+
+        logger.error(traceback.format_exc())

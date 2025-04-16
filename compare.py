@@ -1,23 +1,16 @@
 import os
-import yaml
 import pickle
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-
-
-def load_config(config_path="../gnn/config.yml"):
-    """Load configuration file"""
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    return config
+from utils.helper import load_config
 
 
 def load_metrics_data(filepath):
-    """Load model performance metrics data"""
+    """加载模型性能指标数据"""
     if not os.path.exists(filepath):
-        print(f"Error: File not found {filepath}")
+        print(f"错误：找不到文件 {filepath}")
         return None
 
     with open(filepath, 'rb') as f:
@@ -26,7 +19,7 @@ def load_metrics_data(filepath):
 
 
 def get_model_types(output_dir):
-    """Get all trained model types"""
+    """获取所有已训练的模型类型"""
     possible_models = ["GCN", "GraphSAGE", "GAT", "RGCN", "CausalRGCN"]
     existing_models = []
 
@@ -40,7 +33,7 @@ def get_model_types(output_dir):
 
 
 def create_performance_table(models_data):
-    """Create performance comparison table for different models"""
+    """为不同模型创建性能比较表"""
     metrics_to_compare = ['accuracy', 'precision', 'recall', 'f1-macro', 'macro-auc-roc', 'kappa']
 
     table_data = []
@@ -61,10 +54,10 @@ def create_performance_table(models_data):
 
 
 def plot_performance_comparison(models_data, output_dir):
-    """Create performance comparison chart for different models"""
+    """为不同模型创建性能比较图表"""
     metrics = ['accuracy', 'f1-macro', 'macro-auc-roc']
 
-    # Use professional color palette
+    # 使用专业配色方案
     colors = sns.color_palette("colorblind", len(metrics))
 
     plt.figure(figsize=(10, 6))
@@ -101,24 +94,25 @@ def plot_performance_comparison(models_data, output_dir):
     output_path = os.path.join(output_dir, 'model_performance_comparison.png')
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"Performance comparison chart saved to: {output_path}")
+    print(f"性能比较图表已保存至：{output_path}")
 
 
 def plot_convergence_comparison(models_data, output_dir):
-    """Create convergence speed comparison chart for different models"""
-    # Use professional color palette
+    """为不同模型创建收敛速度比较图表"""
+    # 使用专业配色方案
     colors = sns.color_palette("colorblind", len(models_data))
 
-    # Training loss curve
+    # 训练损失曲线
     plt.figure(figsize=(10, 6))
     sns.set_style("whitegrid")
 
     i = 0
+    has_plot = False
     for model_type, data in models_data.items():
         if 'epoch' in data and 'train_loss' in data:
-            epochs = data['epoch'][:400] # Limit to first 400 epochs for better visualization
+            epochs = data['epoch'][:400]  # 限制为前400个epoch以便更好地可视化
 
-            # Calculate average training loss
+            # 计算平均训练损失
             mean_losses = np.zeros(len(epochs))
             count = 0
 
@@ -131,78 +125,38 @@ def plot_convergence_comparison(models_data, output_dir):
                 mean_losses /= count
                 plt.plot(epochs, mean_losses, label=f"{model_type}",
                          linewidth=3, color=colors[i])
+                has_plot = True
                 i += 1
 
     plt.xlabel('Epoch', fontsize=12)
     plt.ylabel('Average Training Loss', fontsize=12)
     plt.title('Convergence Effect Comparison Across Models', fontsize=14)
-    plt.legend(loc='best', frameon=True, fancybox=True, shadow=True, fontsize=12)
+
+    if has_plot:
+        plt.legend(loc='best', frameon=True, fancybox=True, shadow=True, fontsize=12)
+
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.tight_layout()
 
     output_path = os.path.join(output_dir, 'model_convergence_comparison.png')
     plt.savefig(output_path, dpi=600, bbox_inches='tight')
     plt.close()
-    print(f"Convergence speed comparison chart saved to: {output_path}")
-
-    # Validation metrics curves
-    validation_metrics = ['val_accuracy', 'val_f1_macro', 'val_macro-auc-roc']
-    metric_display_names = {
-        'val_accuracy': 'Accuracy',
-        'val_f1_macro': 'F1-Macro',
-        'val_macro-auc-roc': 'Macro AUC-ROC'
-    }
-
-    for metric in validation_metrics:
-        plt.figure(figsize=(10, 6))
-        sns.set_style("whitegrid")
-
-        i = 0
-        for model_type, data in models_data.items():
-            if 'epoch' in data and metric in data:
-                epochs = data['epoch']
-
-                # Calculate average validation metrics
-                mean_values = np.zeros(len(epochs))
-                count = 0
-
-                for values in data[metric]:
-                    if len(values) >= len(epochs):
-                        mean_values += np.array(values[:len(epochs)])
-                        count += 1
-
-                if count > 0:
-                    mean_values /= count
-                    plt.plot(epochs, mean_values, label=f"{model_type}",
-                             linewidth=2, color=colors[i])
-                    i += 1
-
-        plt.xlabel('Epoch', fontsize=12)
-        plt.ylabel(f'Average {metric_display_names[metric]}', fontsize=12)
-        plt.title(f'{metric_display_names[metric]} Progression Across Models', fontsize=14)
-        plt.legend(loc='best', frameon=True, fancybox=True, shadow=True)
-        plt.grid(True, linestyle='--', alpha=0.7)
-        plt.tight_layout()
-
-        output_path = os.path.join(output_dir, f'model_{metric}_comparison.png')
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        print(f"{metric_display_names[metric]} comparison chart saved to: {output_path}")
+    print(f"收敛速度比较图表已保存至：{output_path}")
 
 
 def compare_models():
-    """Main function: Compare performance of different models"""
+    """主函数：比较不同模型的性能"""
     config = load_config()
     output_dir = config["paths"]["output_dir"]
 
     model_types = get_model_types(output_dir)
-    print(f"Found following model types for comparison: {model_types}")
+    print(f"找到以下模型类型进行比较：{model_types}")
 
-    # Create visualization output directory
+    # 创建可视化输出目录
     vis_output_dir = os.path.join(output_dir, "cmp_experiment")
     os.makedirs(vis_output_dir, exist_ok=True)
 
-    # Load performance metrics data for each model
+    # 加载每个模型的性能指标数据
     models_data = {}
     for model_type in model_types:
         metrics_file = os.path.join(output_dir, f"model_{model_type}", "all_metrics_data.pkl")
@@ -211,26 +165,26 @@ def compare_models():
             models_data[model_type] = data
 
     if not models_data:
-        print("No valid model performance data found, cannot proceed with comparison")
+        print("未找到有效的模型性能数据，无法进行比较")
         return
 
-    # Create performance comparison table
+    # 创建性能比较表
     comparison_table = create_performance_table(models_data)
-    print("\nModel Performance Comparison:")
+    print("模型性能比较：")
     print(comparison_table.to_string(index=False))
 
-    # Save table to CSV file
+    # 保存表格到CSV文件
     table_path = os.path.join(vis_output_dir, "model_performance_comparison.csv")
     comparison_table.to_csv(table_path, index=False)
-    print(f"Performance comparison table saved to: {table_path}")
+    print(f"性能比较表已保存至：{table_path}")
 
-    # Create performance comparison charts
+    # 创建性能比较图表
     plot_performance_comparison(models_data, vis_output_dir)
 
-    # Create convergence speed comparison charts
+    # 创建收敛速度比较图表
     plot_convergence_comparison(models_data, vis_output_dir)
 
-    print(f"All comparison charts saved to: {vis_output_dir}")
+    print(f"所有比较图表已保存至：{vis_output_dir}")
 
 
 if __name__ == "__main__":

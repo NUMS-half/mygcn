@@ -1,4 +1,6 @@
 import os
+
+import sklearn
 import yaml
 import torch
 import random
@@ -26,8 +28,8 @@ __all__ = [
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s-%(name)s-%(levelname)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-LOG_DIR = "../logs"
-CONFIG_PATH = "config.yml"
+LOG_DIR = "./logs"
+CONFIG_PATH = "./config.yml"
 
 # 确保日志目录存在
 if not os.path.exists(LOG_DIR):
@@ -104,6 +106,8 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+    sklearn.utils.check_random_state(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 
 # ===== 配置文件相关功能 =====
@@ -213,7 +217,6 @@ def get_model_out(model_type, model, data):
 
     if model_type in ["UserBehaviorGCN", "RGCN", "CausalRGCN"]:
         return model(data.x, data.edge_index, data.edge_type)
-        # return model(data.x, data.edge_index, data.edge_type, data.edge_attr)
     else:
         return model(data.x, data.edge_index)
 
@@ -239,12 +242,6 @@ def get_optimizer(config, model_parameters):
     if optimizer_type == "AdamW":
         optimizer = optim.AdamW(model_parameters, lr=lr, weight_decay=weight_decay)
         logger.info(f"创建AdamW优化器: lr={lr}, weight_decay={weight_decay}")
-    elif optimizer_type == "Adam":
-        optimizer = optim.Adam(model_parameters, lr=lr, weight_decay=weight_decay)
-        logger.info(f"创建Adam优化器: lr={lr}, weight_decay={weight_decay}")
-    elif optimizer_type == "SGD":
-        optimizer = optim.SGD(model_parameters, lr=lr, weight_decay=weight_decay, momentum=0.9)
-        logger.info(f"创建SGD优化器: lr={lr}, weight_decay={weight_decay}, momentum=0.9")
     else:
         logger.error(f"不支持的优化器类型: {optimizer_type}")
         raise ValueError(f"不支持的优化器类型: {optimizer_type}")
@@ -269,20 +266,7 @@ def get_scheduler(config, optimizer, epoch_num):
     scheduler_config = config["scheduler"]
     scheduler_type = scheduler_config["type"]
 
-    if scheduler_type == "OneCycleLR":
-        scheduler = lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=scheduler_config["max_lr"],
-            total_steps=epoch_num,
-            pct_start=scheduler_config["pct_start"],
-            anneal_strategy=scheduler_config["anneal_strategy"],
-            div_factor=scheduler_config["div_factor"],
-            final_div_factor=scheduler_config["final_div_factor"]
-        )
-        logger.info(
-            f"创建OneCycleLR调度器: max_lr={scheduler_config['max_lr']}, pct_start={scheduler_config['pct_start']}, "
-            f"total_steps={epoch_num}, strategy={scheduler_config['anneal_strategy']}, div={scheduler_config['div_factor']}, final_div={scheduler_config['final_div_factor']}")
-    elif scheduler_type == "ReduceLROnPlateau":
+    if scheduler_type == "ReduceLROnPlateau":
         scheduler = lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode=scheduler_config.get("mode", "max"),          # 默认监控F1分数提高

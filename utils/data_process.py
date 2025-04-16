@@ -585,7 +585,7 @@ class GraphGenerator:
         # self.save_triples_to_dir()  # 保存三元组(可选)
         graph = self.build_knowledge_graph()  # 构建知识图谱
         self.save_graph_as_pt(graph, train_ratio, val_ratio)  # 保存图谱(划分数据集)
-        self.visualize_graph(graph)  # 可视化图谱(可选)
+        # self.visualize_graph(graph)  # 可视化图谱(可选)
 
     def process(self):
         """数据预处理全流程"""
