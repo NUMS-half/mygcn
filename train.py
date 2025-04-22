@@ -562,7 +562,7 @@ def train(seed=2345, model_type=None, model_save_dir=None):
     # 可视化训练过程
     if visualize:
         visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
-                                   val_precisions, val_recalls, val_macro_f1s, learning_rates)
+                                   val_precisions, val_recalls, val_macro_f1s, val_macro_auc_rocs,learning_rates)
 
     # 返回更多信息：最佳模型路径和训练过程数据
     epoch_data = {
@@ -581,7 +581,7 @@ def train(seed=2345, model_type=None, model_save_dir=None):
 
 
 def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
-                               val_precisions, val_recalls, val_f1s, learning_rates):
+                               val_precisions, val_recalls, val_f1s, val_auc_rocs, learning_rates):
     """可视化训练过程中的损失和多种评估指标变化"""
 
     # 创建输出目录
@@ -605,10 +605,12 @@ def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
 
     # 2. 准确率曲线
     plt.subplot(2, 2, 2)
-    plt.plot(epochs, val_accuracies, 'g-', linewidth=2.5)
-    plt.title('Validation Accuracy', fontsize=14)
+    plt.plot(epochs, val_accuracies, 'g-', label='Val Acc', linewidth=2.5)
+    plt.plot(epochs, val_f1s, 'y-', label='Val F1-Score', linewidth=2.5)
+    plt.title('Validation Accuracy and F1 Score', fontsize=14)
     plt.xlabel('Epochs', fontsize=12)
-    plt.ylabel('Accuracy', fontsize=12)
+    plt.ylabel('Score', fontsize=12)
+    plt.legend(loc='lower right')
     plt.grid(True, linestyle='--', alpha=0.6)
 
     # 3. 精确率和召回率曲线
@@ -623,15 +625,15 @@ def visualize_training_process(epochs, train_losses, val_losses, val_accuracies,
 
     # 4. F1分数曲线
     plt.subplot(2, 2, 4)
-    plt.plot(epochs, val_f1s, 'y-', linewidth=2.5)
-    plt.title('F1 Score', fontsize=14)
+    plt.plot(epochs, val_auc_rocs, 'b-', linewidth=2.5)
+    plt.title('Macro AUC-ROC', fontsize=14)
     plt.xlabel('Epochs', fontsize=12)
-    plt.ylabel('F1', fontsize=12)
+    plt.ylabel('AUC-ROC', fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.6)
 
     # 调整布局并保存图像
     plt.tight_layout()
-    plt.savefig(os.path.join(output_path, "all_metrics.png"), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(output_path, "all_metrics.png"), dpi=300, bbox_inches='tight', transparent=True)
     logger.info(f"所有评估指标可视化已保存至 {output_path}/all_metrics.png")
 
     # 创建简洁版图表 - 仅包含损失和F1分数
@@ -1052,22 +1054,22 @@ def run_multi_seed_training(seed_list, output_dir):
     else:
         logger.error("所有轮次均失败，无法计算平均性能")
 
-# if __name__ == "__main__":
-#   # 设置多个随机种子
-#     seed_list = [45, 512, 45, 1024, 2345]
-#     # seed_list = list(2345 for i in range(5))  # 2345
-#     run_multi_seed_training(seed_list, output_dir)
-
 if __name__ == "__main__":
-    try:
-        model_dir = os.path.join(output_dir, "model")
-        epoch_data = train(seed=2345, model_save_dir=model_dir)  # 训练模型
-        if epoch_data:
-            best_model_dir = os.path.join(model_dir, "best_model.pth")
-            test(best_model_dir)  # 测试模型
-        else:
-            logger.error("训练失败，跳过测试")
-    except Exception as e:
-        logger.error(f"训练或测试过程发生错误: {e}")
+  # 设置多个随机种子
+    seed_list = [45, 512, 45, 1024, 2345]
+    # seed_list = list(2345 for i in range(5))  # 2345
+    run_multi_seed_training(seed_list, output_dir)
 
-        logger.error(traceback.format_exc())
+# if __name__ == "__main__":
+#     try:
+#         model_dir = os.path.join(output_dir, "model")
+#         epoch_data = train(seed=2345, model_save_dir=model_dir)  # 训练模型
+#         if epoch_data:
+#             best_model_dir = os.path.join(model_dir, "best_model.pth")
+#             test(best_model_dir)  # 测试模型
+#         else:
+#             logger.error("训练失败，跳过测试")
+#     except Exception as e:
+#         logger.error(f"训练或测试过程发生错误: {e}")
+#
+#         logger.error(traceback.format_exc())

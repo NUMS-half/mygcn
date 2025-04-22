@@ -63,4 +63,4 @@ paths:
 # 评估配置
 evaluation:
   print_metrics: true        # 打印评估指标
-  visualization: false        # 生成可视化图表
+  visualization: true        # 生成可视化图表

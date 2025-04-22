@@ -30,7 +30,7 @@ class UserBehaviorGCN(torch.nn.Module):
             num_bases=6,
             aggr='max',  # 聚合方法：mean, add, max，目前性能好的组合：max + add / mean + add
             causal_strength=True,  # 启用因果强度预测
-            sparsity=0.15  # 轻度稀疏性约束
+            sparsity=0.15,  # 轻度稀疏性约束
         )
         self.ln1 = LayerNorm(hidden_dim)
 
@@ -42,12 +42,11 @@ class UserBehaviorGCN(torch.nn.Module):
             num_bases=6,
             aggr='add',
             causal_strength=True,
-            sparsity=0.25  # 稀疏性约束递增
+            sparsity=0.25,  # 稀疏性约束递增
         )
         self.ln2 = LayerNorm(hidden_dim)
 
         # 分类头（输出层）：三层 MLP
-        # self.classifier = nn.Linear(hidden_dim, output_dim)
         self.classifier = nn.Sequential(
             # 第一层（保持维度）
             nn.Linear(hidden_dim, hidden_dim),  # 先保持原维度不变
@@ -60,6 +59,7 @@ class UserBehaviorGCN(torch.nn.Module):
             # 输出层（进行分类）
             nn.Linear(hidden_dim // 2, output_dim)
         )
+        # self.classifier = nn.Linear(hidden_dim, output_dim)
 
         self.dropout = dropout
         self.edge_dropout = edge_dropout
@@ -92,7 +92,7 @@ class UserBehaviorGCN(torch.nn.Module):
 
     def get_node_reps(self, x, edge_index, edge_type):
         """
-        按原论文风格实现的节点表示获取函数
+        按原论文方式实现节点表示获取函数
 
         参数:
             x: 节点特征
@@ -102,8 +102,7 @@ class UserBehaviorGCN(torch.nn.Module):
         返回:
             node_x: 节点表示向量
         """
-        # 类似原论文中的节点嵌入层
-        # 我们使用第一层卷积直接作为嵌入层，保持模型结构
+        # 使用第一层卷积直接作为嵌入层，保持模型结构
         convs = [self.conv1, self.conv2]
         activations = [F.relu, F.relu]
         norms = [self.ln1, self.ln2]

@@ -97,8 +97,6 @@ class CausalRGCNConv(MessagePassing):
             if causal_strength:
                 # 每种关系的因果强度权重
                 self.causal_strength_weights = Parameter(torch.empty(num_relations, 1))
-                # 因果关系阈值（初始化为0.5）
-                self.causal_threshold = Parameter(torch.tensor(0.5))  # 可学习的因果阈值
 
         # 初始化所有参数
         self.reset_parameters()
@@ -128,7 +126,6 @@ class CausalRGCNConv(MessagePassing):
                 # 较小的初始值，避免过早引入强因果假设
                 with torch.no_grad():
                     self.causal_strength_weights.data.fill_(0.1)  # 将因果强度权重初始化为较小值，避免模型过早强制建立因果关系
-                    self.causal_threshold.data.fill_(0.5)  # 将因果阈值起点设置为0.5
 
     def forward(self, x, edge_index, edge_type=None, intervention_nodes=None):
         """
