@@ -8,7 +8,7 @@ from utils.helper import set_seed, get_logger
 logger = get_logger("LabelGenerator")
 
 # 读取数据
-INPUT_FILE = "../data/raw/generated_user_behavior_data.csv"
+INPUT_FILE = "../data/raw/user_behavior_data.csv"
 OUTPUT_FILE = "../data/raw/labeled_user_behavior_data.csv"
 
 

@@ -278,6 +278,19 @@ def get_scheduler(config, optimizer, epoch_num):
             f"创建ReduceLROnPlateau调度器: mode={scheduler_config.get('mode', 'max')}, "
             f"factor={scheduler_config.get('factor', 0.5)}, patience={scheduler_config.get('patience', 10)}, "
             f"min_lr={scheduler_config.get('min_lr', 1e-6)}")
+    elif scheduler_type == "OneCycleLR":
+        scheduler = lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=scheduler_config["max_lr"],
+            total_steps=epoch_num,
+            pct_start=scheduler_config["pct_start"],
+            anneal_strategy=scheduler_config["anneal_strategy"],
+            div_factor=scheduler_config["div_factor"],
+            final_div_factor=scheduler_config["final_div_factor"]
+        )
+        logger.info(
+            f"创建OneCycleLR调度器: max_lr={scheduler_config['max_lr']}, pct_start={scheduler_config['pct_start']}, "
+            f"total_steps={epoch_num}, strategy={scheduler_config['anneal_strategy']}, div={scheduler_config['div_factor']}, final_div={scheduler_config['final_div_factor']}")
     else:
         logger.error(f"不支持的调度器类型: {scheduler_type}")
         raise ValueError(f"不支持的调度器类型: {scheduler_type}")

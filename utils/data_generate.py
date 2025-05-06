@@ -99,7 +99,7 @@ class DataGenerator:
 
         return data
 
-    def save_to_csv(self, data, filename="generated_user_behavior_data.csv"):
+    def save_to_csv(self, data, filename="user_behavior_data.csv"):
         """
         将生成的数据保存为CSV文件
 
@@ -132,7 +132,7 @@ class DataGenerator:
             self.logger.error(f"保存数据失败: {e}")
             return None
 
-    def process(self, num_samples=DATA_SIZE, filename="generated_user_behavior_data.csv"):
+    def process(self, num_samples=DATA_SIZE, filename="user_behavior_data.csv"):
         """
         执行完整的数据生成流程
 

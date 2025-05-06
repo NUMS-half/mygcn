@@ -3,9 +3,10 @@
 # 训练参数
 training:
   epoch_num: 500                # 训练的总轮数
-  patience: 50                  # 早停耐心值，连续多少轮无改进后停止训练
   print_interval: 25            # 打印训练信息的间隔轮数
-  enable_early_stopping: true   # 是否启用早停机制
+  early_stopping:
+    enable: true               # 是否启用早停机制
+    patience: 50               # 早停耐心值，连续多少轮无改进后停止训练
 
 # 模型配置
 model:
@@ -24,6 +25,13 @@ optimizer:
 # 学习率调度器
 scheduler:
   type: "ReduceLROnPlateau"      # 学习率调度器类型
+
+#  type: "OneCycleLR"             # 学习率调度器类型
+#  max_lr: 0.025                  # 最大学习率
+#  pct_start: 0.15                 # 学习率上升阶段占总训练的比例
+#  anneal_strategy: "cos"         # 学习率下降策略，"cos"或"linear"
+#  div_factor: 20                 # 决定 init_lr = max_lr / div_factor
+#  final_div_factor: 100          # 决定 min_lr = init_lr / final_div_factor
 
   # ReduceLROnPlateau 调度器配置（更适配于早停机制）
   mode: "min"           # 最小化验证损失

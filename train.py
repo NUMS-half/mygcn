@@ -355,9 +355,9 @@ def train(seed=2345, model_type=None, model_save_dir=None):
     if (model_type is None):
         model_type = config["model"]["type"]
     epoch_num = config["training"]["epoch_num"]
-    patience = config["training"]["patience"]
     print_interval = config["training"]["print_interval"]
-    enable_early_stopping = config["training"]["enable_early_stopping"]
+    enable_early_stopping = config["training"]["early_stopping"]["enable"]
+    patience = config["training"]["early_stopping"]["patience"]
 
     # 确定模型保存路径
     if model_save_dir is None:
@@ -530,6 +530,7 @@ def train(seed=2345, model_type=None, model_save_dir=None):
 
         # 更新学习率
         scheduler.step(val_loss.item())
+        # scheduler.step()
 
         # 每interval个epoch打印指标
         if epoch % print_interval == 0:
@@ -855,7 +856,7 @@ def test(model_path=None):
     test_results = evaluate(model, "test", data, config)
 
     # 添加因果干预分析
-    if config["model"]["type"] == "CausalRGCN":
+    if config["model"]["type"] == "UserBehaviorGCN":
         test_logger.info(f"{'=' * 15} 执行因果干预分析 {'=' * 15}")
         analyze_interventions(model, data, config)
 
@@ -898,7 +899,7 @@ def print_metrics_table(results, logger, title="测试集评估结果"):
     logger.info(f"Confusion Matrix:\n{conf_matrix}")
 
     # 计算每个类别的预测准确率
-    logger.info(f"\n{'=' * 20} 各类别预测准确率 {'=' * 20}")
+    logger.info(f"\n{'=' * 20} 各类别预测召回率 {'=' * 20}")
 
     # 直接从混淆矩阵计算每个类别的准确率
     for i in range(conf_matrix.shape[0]):
@@ -1054,22 +1055,22 @@ def run_multi_seed_training(seed_list, output_dir):
     else:
         logger.error("所有轮次均失败，无法计算平均性能")
 
-if __name__ == "__main__":
-  # 设置多个随机种子
-    seed_list = [45, 512, 45, 1024, 2345]
-    # seed_list = list(2345 for i in range(5))  # 2345
-    run_multi_seed_training(seed_list, output_dir)
-
 # if __name__ == "__main__":
-#     try:
-#         model_dir = os.path.join(output_dir, "model")
-#         epoch_data = train(seed=2345, model_save_dir=model_dir)  # 训练模型
-#         if epoch_data:
-#             best_model_dir = os.path.join(model_dir, "best_model.pth")
-#             test(best_model_dir)  # 测试模型
-#         else:
-#             logger.error("训练失败，跳过测试")
-#     except Exception as e:
-#         logger.error(f"训练或测试过程发生错误: {e}")
-#
-#         logger.error(traceback.format_exc())
+#   # 设置多个随机种子
+#   #   seed_list = [45, 512, 45, 1024, 2345]
+#     seed_list = list(2345 for i in range(5))  # 2345
+#     run_multi_seed_training(seed_list, output_dir)
+
+if __name__ == "__main__":
+    try:
+        model_dir = os.path.join(output_dir, "model")
+        epoch_data = train(seed=2345, model_save_dir=model_dir)  # 训练模型
+        if epoch_data:
+            best_model_dir = os.path.join(model_dir, "best_model.pth")
+            test(best_model_dir)  # 测试模型
+        else:
+            logger.error("训练失败，跳过测试")
+    except Exception as e:
+        logger.error(f"训练或测试过程发生错误: {e}")
+
+        logger.error(traceback.format_exc())
